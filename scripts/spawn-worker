@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# spawn-worker — invoked by the orchestrator inside its container.
+# Calls back to the Boss Man API server to enqueue a typed worker run.
+# Prints the run ID to stdout on success.
+#
+# Usage:
+#   spawn-worker --role <role> --prompt <text> [options]
+#
+# Options:
+#   --role          test_generator|implementer|reviewer|security_reviewer|researcher|refactor
+#   --prompt        Task description (required)
+#   --model         high|medium|low|<litellm-model-id> (default: role-based)
+#   --name          Display name for this run
+#   --max-iterations N (default: 10)
+#   --agent         claude-code|codex|opencode (default: claude-code)
+#   --beads-task-id bd-XXXX (links run to a Beads task)
+#   --wait          Block until run completes (polls every 5s)
+
+set -euo pipefail
+
+API_URL="${BOSS_MAN_API_URL:-http://host.docker.internal:3001}"
+PROJECT_ID="${BOSS_MAN_PROJECT_ID:-}"
+
+ROLE=""
+PROMPT=""
+MODEL=""
+NAME=""
+MAX_ITERATIONS=10
+AGENT="claude-code"
+BEADS_TASK_ID=""
+WAIT=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --role)          ROLE="$2";          shift 2 ;;
+    --prompt)        PROMPT="$2";        shift 2 ;;
+    --model)         MODEL="$2";         shift 2 ;;
+    --name)          NAME="$2";          shift 2 ;;
+    --max-iterations) MAX_ITERATIONS="$2"; shift 2 ;;
+    --agent)         AGENT="$2";         shift 2 ;;
+    --beads-task-id) BEADS_TASK_ID="$2"; shift 2 ;;
+    --wait)          WAIT=true;          shift ;;
+    *) echo "Unknown flag: $1" >&2; exit 1 ;;
+  esac
+done
+
+if [[ -z "$ROLE" ]]; then
+  echo "Error: --role is required" >&2
+  exit 1
+fi
+
+if [[ -z "$PROMPT" ]]; then
+  echo "Error: --prompt is required" >&2
+  exit 1
+fi
+
+if [[ -z "$PROJECT_ID" ]]; then
+  echo "Error: BOSS_MAN_PROJECT_ID env var is not set" >&2
+  exit 1
+fi
+
+PAYLOAD=$(jq -cn \
+  --arg projectId "$PROJECT_ID" \
+  --arg role "$ROLE" \
+  --arg prompt "$PROMPT" \
+  --arg model "$MODEL" \
+  --arg name "$NAME" \
+  --argjson maxIterations "$MAX_ITERATIONS" \
+  --arg agentProvider "$AGENT" \
+  --arg beadsTaskId "$BEADS_TASK_ID" \
+  '{
+    projectId: $projectId,
+    role: $role,
+    prompt: $prompt,
+    agentProvider: $agentProvider,
+    maxIterations: $maxIterations,
+    name: (if $name != "" then $name else null end),
+    model: (if $model != "" then $model else null end),
+    beadsTaskId: (if $beadsTaskId != "" then $beadsTaskId else null end)
+  }')
+
+RESPONSE=$(curl -sf -X POST "$API_URL/api/runs" \
+  -H "Content-Type: application/json" \
+  -d "$PAYLOAD")
+
+RUN_ID=$(echo "$RESPONSE" | jq -r '.id')
+echo "$RUN_ID"
+
+if [[ "$WAIT" == "true" ]]; then
+  while true; do
+    STATUS=$(curl -sf "$API_URL/api/runs/$RUN_ID" | jq -r '.status')
+    case "$STATUS" in
+      completed) exit 0 ;;
+      failed)    echo "Worker $RUN_ID failed" >&2; exit 1 ;;
+      cancelled) echo "Worker $RUN_ID was cancelled" >&2; exit 1 ;;
+    esac
+    sleep 5
+  done
+fi

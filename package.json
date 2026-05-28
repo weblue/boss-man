@@ -1,0 +1,20 @@
+{
+  "name": "boss-man-dashboard",
+  "private": true,
+  "engines": {
+    "node": ">=22 <25"
+  },
+  "workspaces": ["server"],
+  "scripts": {
+    "dev": "npm run dev --workspace=server",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "install:all": "./install.sh",
+    "start": "./start.sh",
+    "stop": "./stop.sh"
+  },
+  "devDependencies": {
+    "@ai-hero/sandcastle": "latest",
+    "tsx": "^4.0.0"
+  }
+}
