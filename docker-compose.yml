@@ -63,7 +63,7 @@ services:
 
   # ── Langfuse — on :3002 to avoid collision with mr-robot's :3000 ─────────────
   langfuse-web:
-    image: langfuse/langfuse:3
+    image: langfuse/langfuse:2
     restart: unless-stopped
     ports:
       - "${LANGFUSE_PORT:-3002}:3000"
