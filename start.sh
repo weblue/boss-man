@@ -30,7 +30,7 @@ SERVER_PORT="${SERVER_PORT:-3001}"
 echo "── Checking LiteLLM ──"
 
 STANDALONE=false
-if curl -sf "http://localhost:${LITELLM_PORT}/health" >/dev/null 2>&1; then
+if curl -sf "http://localhost:${LITELLM_PORT}/health/liveliness" >/dev/null 2>&1; then
   ok "LiteLLM at :${LITELLM_PORT} already running — reusing existing instance"
   LITELLM_SOURCE="existing"
 else
@@ -47,7 +47,7 @@ if [[ "$STANDALONE" == "true" ]]; then
   docker compose --profile standalone up -d
   echo "Waiting for LiteLLM to be ready..."
   for i in $(seq 1 30); do
-    curl -sf "http://localhost:${LITELLM_PORT}/health" >/dev/null 2>&1 && break
+    curl -sf "http://localhost:${LITELLM_PORT}/health/liveliness" >/dev/null 2>&1 && break
     sleep 2
   done
   ok "LiteLLM ready at :${LITELLM_PORT}"

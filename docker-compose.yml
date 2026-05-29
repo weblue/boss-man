@@ -75,6 +75,15 @@ services:
       ENCRYPTION_KEY: "${LANGFUSE_ENCRYPTION_KEY}"
       TELEMETRY_ENABLED: "false"
       LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+      LANGFUSE_INIT_ORG_ID: "boss-man-org"
+      LANGFUSE_INIT_ORG_NAME: "boss-man"
+      LANGFUSE_INIT_PROJECT_ID: "boss-man-project"
+      LANGFUSE_INIT_PROJECT_NAME: "boss-man"
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: "${LANGFUSE_PUBLIC_KEY}"
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: "${LANGFUSE_SECRET_KEY}"
+      LANGFUSE_INIT_USER_EMAIL: "${LANGFUSE_ADMIN_EMAIL:-admin@localhost}"
+      LANGFUSE_INIT_USER_PASSWORD: "${LANGFUSE_ADMIN_PASSWORD:-changeme}"
+      LANGFUSE_INIT_USER_NAME: "Admin"
     depends_on:
       langfuse-db:
         condition: service_healthy
