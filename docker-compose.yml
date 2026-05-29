@@ -1,4 +1,9 @@
+# Boss Man Dashboard — full self-contained stack.
+# start.sh will skip litellm + postgres if ao-briefcase is already running on :4000.
+
 services:
+  # ── LiteLLM ─────────────────────────────────────────────────────────────────
+  # Skipped by start.sh when ao-briefcase's LiteLLM is already on :4000.
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
     restart: unless-stopped
@@ -6,16 +11,23 @@ services:
       - "${LITELLM_PORT:-4000}:4000"
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
+      - ./callbacks.py:/app/callbacks.py:ro
     environment:
       LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY}"
       LITELLM_SALT_KEY: "${LITELLM_SALT_KEY}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
-      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-placeholder}"
       DATABASE_URL: "postgresql://litellm:${POSTGRES_PASSWORD}@postgres:5432/litellm"
+      LANGFUSE_PUBLIC_KEY: "${LANGFUSE_PUBLIC_KEY}"
+      LANGFUSE_SECRET_KEY: "${LANGFUSE_SECRET_KEY}"
+      LANGFUSE_HOST: "http://langfuse-web:3000"
     depends_on:
       postgres:
         condition: service_healthy
+      langfuse-web:
+        condition: service_started
     command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "8"]
+    profiles: ["standalone"]
 
   postgres:
     image: postgres:16-alpine
@@ -31,7 +43,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    profiles: ["standalone"]
 
+  # ── Dolt (Beads backend) — always started ────────────────────────────────────
   dolt:
     image: dolthub/dolt-sql-server:latest
     restart: unless-stopped
@@ -47,14 +61,15 @@ services:
       --user root
       --password ${DOLT_ROOT_PASSWORD}
 
+  # ── Langfuse — on :3002 to avoid collision with mr-robot's :3000 ─────────────
   langfuse-web:
     image: langfuse/langfuse:3
     restart: unless-stopped
     ports:
-      - "${LANGFUSE_PORT:-3000}:3000"
+      - "${LANGFUSE_PORT:-3002}:3000"
     environment:
       DATABASE_URL: "postgresql://langfuse:${LANGFUSE_DB_PASSWORD}@langfuse-db:5432/langfuse"
-      NEXTAUTH_URL: "http://localhost:${LANGFUSE_PORT:-3000}"
+      NEXTAUTH_URL: "http://localhost:${LANGFUSE_PORT:-3002}"
       NEXTAUTH_SECRET: "${LANGFUSE_NEXTAUTH_SECRET}"
       SALT: "${LANGFUSE_SALT}"
       ENCRYPTION_KEY: "${LANGFUSE_ENCRYPTION_KEY}"
@@ -79,17 +94,7 @@ services:
       timeout: 5s
       retries: 5
 
-  prometheus:
-    image: prom/prometheus:latest
-    restart: unless-stopped
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-
 volumes:
   postgres_data:
   dolt_data:
   langfuse_db_data:
-  prometheus_data:

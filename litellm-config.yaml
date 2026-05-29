@@ -1,43 +1,68 @@
+# Boss Man Dashboard — LiteLLM config
+# Mirrors ao-briefcase's model setup so the same keys work in both projects.
+
 model_list:
-  # ── High tier: discovery, review, security ─────────────────────────────────
+  # ── Boss Man tier aliases ───────────────────────────────────────────────────
+  # These are what worker prompts and config.ts reference.
   - model_name: boss-man/high
     litellm_params:
       model: anthropic/claude-opus-4-7
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  # ── Medium tier: implementation, test generation ───────────────────────────
   - model_name: boss-man/medium
     litellm_params:
       model: anthropic/claude-sonnet-4-6
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  # ── Low tier: simple refactors ─────────────────────────────────────────────
   - model_name: boss-man/low
     litellm_params:
-      model: anthropic/claude-haiku-4-5-20251001
+      model: anthropic/claude-haiku-4-5
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  # ── Direct model aliases (for explicit overrides) ──────────────────────────
+  # ── Direct Anthropic aliases (same as ao-briefcase) ────────────────────────
   - model_name: claude-opus-4-7
+    model_info:
+      route_family: anthropic-messages
+      intended_complexity: deep
     litellm_params:
       model: anthropic/claude-opus-4-7
       api_key: os.environ/ANTHROPIC_API_KEY
 
   - model_name: claude-sonnet-4-6
+    model_info:
+      route_family: anthropic-messages
+      intended_complexity: standard
     litellm_params:
       model: anthropic/claude-sonnet-4-6
       api_key: os.environ/ANTHROPIC_API_KEY
 
   - model_name: claude-haiku-4-5
+    model_info:
+      route_family: anthropic-messages
+      intended_complexity: simple
     litellm_params:
-      model: anthropic/claude-haiku-4-5-20251001
+      model: anthropic/claude-haiku-4-5
       api_key: os.environ/ANTHROPIC_API_KEY
 
-litellm_settings:
-  drop_params: true
-  set_verbose: false
-  json_logs: true
+  # ── Local model (optional — requires Ollama on host) ───────────────────────
+  - model_name: local-worker
+    litellm_params:
+      model: ollama_chat/qwen2.5-coder:32b
+      api_base: http://host.docker.internal:11434
+    model_info:
+      supports_function_calling: true
+      route_family: local
+      intended_complexity: simple
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   database_url: os.environ/DATABASE_URL
+  forward_client_headers_to_llm_api: true
+
+litellm_settings:
+  drop_params: true
+  store_prompts_in_spend_logs: true
+  success_callback:
+    - langfuse
+  failure_callback:
+    - langfuse

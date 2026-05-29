@@ -6,3 +6,6 @@ dist/
 .ui.pid
 *.bak
 .sandcastle/
+.DS_Store
+.prismo/
+.cursorignore
