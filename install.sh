@@ -69,23 +69,21 @@ else
   fi
 fi
 
-# ── 3. PrismoDev smoke test ──────────────────────────────────────────────────
+# ── 3. PrismoDev check ───────────────────────────────────────────────────────
 
 echo ""
-echo "── Verifying PrismoDev (prismo) ──"
+echo "── Checking PrismoDev (prismo) ──"
 
-if npx getprismo --version 2>/dev/null | grep -q '[0-9]'; then
-  ok "prismo: $(npx getprismo --version 2>/dev/null)"
+if command -v getprismo &>/dev/null; then
+  ok "prismo installed: $(getprismo --version 2>/dev/null || echo 'version unknown')"
+elif command -v npx &>/dev/null && npx --no getprismo --version &>/dev/null 2>&1; then
+  ok "prismo available via npx"
 else
-  warn "prismo version check inconclusive — running doctor to verify it works"
+  warn "prismo not found — install it with: npm install -g getprismo"
+  warn "Then run 'getprismo doctor' in each project directory before starting work."
 fi
-
-# Run prismo doctor on the boss-man-dashboard repo itself as a smoke test
-if npx --yes getprismo doctor --quiet 2>&1 | grep -qiE "(score|complete|ok)"; then
-  ok "prismo doctor passed"
-else
-  warn "prismo doctor output unclear — check manually with: npx getprismo doctor"
-fi
+# NOTE: prismo doctor is intentionally NOT run during install — it scans the project
+# and can stall on large repos. Run it manually per-project: getprismo doctor
 
 # ── 4. Environment file ──────────────────────────────────────────────────────
 

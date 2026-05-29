@@ -17,6 +17,11 @@ When you start a new session, always:
 1. Get current task state and memories: `curl -s "$BOSS_MAN_API_URL/api/beads/prime"`
 2. If a `.spec/checkpoint.md` exists in `/workspace`, read it to resume from where you left off
 3. If there are unblocked tasks with no corresponding running workers, resume the execution loop
+4. If this is the first time opening the project (no `.spec/` directory yet), run prismo to optimize context:
+   ```bash
+   getprismo doctor 2>/dev/null || npx getprismo doctor 2>/dev/null || true
+   ```
+   This generates `.claudeignore` and context summaries. It is safe to skip if it stalls — run it manually later.
 
 ---
 

@@ -38,12 +38,8 @@ router.post('/api/projects', async (c) => {
     execSync(`git init ${repoPath}`, { stdio: 'inherit' });
   }
 
-  // Initialize prismo for token efficiency — generate .claudeignore + context summaries
-  try {
-    execSync(`npx getprismo doctor --quiet`, { cwd: repoPath, stdio: 'pipe', timeout: 30_000 });
-  } catch {
-    // prismo doctor is best-effort; don't fail project creation if it errors
-  }
+  // Prismo doctor is run by the orchestrator on first use, not during project creation.
+  // Running it here blocks the request and can stall on large repos.
 
   insertProject({
     id,
