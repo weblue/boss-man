@@ -130,6 +130,13 @@ export async function listTasks(): Promise<BeadsTask[] | string> {
   return res.text();
 }
 
+export async function listModels(): Promise<string[]> {
+  const res = await fetch('/api/models');
+  if (!res.ok) return [];
+  const data = await res.json() as { models: string[] };
+  return data.models ?? [];
+}
+
 export async function listSpecs(projectId: string): Promise<SpecFile[]> {
   return json<SpecFile[]>(await fetch(`/api/projects/${encodeURIComponent(projectId)}/specs`));
 }

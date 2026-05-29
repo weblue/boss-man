@@ -55,10 +55,11 @@ Build the React frontend in `ui/` workspace. Uncomment the `npm run dev --worksp
 - [x] "Start Session" flow: text area for initial spec → `POST /api/projects/:id/sessions`
 - [x] Orchestrator backend toggle: Anthropic OAuth token vs LiteLLM Anthropic-compatible routing, both using `claude-code`
 - [x] Persist/replay orchestrator transcript across tab switches using run events
-- [ ] Show a loading/thinking indicator in the chat while the current turn is running (pulsing dots or spinner tied to `run.status === 'running'`)
-- [ ] `Enter` submits the chat input; `Shift+Enter` inserts a newline
-- [ ] Model selector should be a dropdown (populated from `GET /v1/models` via LiteLLM) not a raw text input
-- [ ] Chat transcript must only show orchestrator turns (runs with `orchestrator_session_id` set); worker/sub-agent runs spawned by the orchestrator must not appear in the chat view — they belong in the Runs tab only
+- [x] Show a loading/thinking indicator in the chat while the current turn is running (pulsing dots or spinner tied to `run.status === 'running'`)
+- [x] `Enter` submits the chat input; `Shift+Enter` inserts a newline
+- [x] Model selector should be a dropdown (populated from `GET /api/models` proxied from LiteLLM) not a raw text input
+- [x] Chat transcript must only show orchestrator turns (runs with `orchestrator_session_id` set); worker/sub-agent runs spawned by the orchestrator must not appear in the chat view — they belong in the Runs tab only
+- [x] Runs tab: orchestrator turns grouped into one entry per session (shows turn count + cumulative tokens); worker runs remain individual entries by role
 
 #### 3d — Task Board tab
 - [x] `GET /api/beads/tasks` — render kanban or table by status (open / in-progress / done)
@@ -106,6 +107,7 @@ Goal: the web UI should expose the full useful experience of a Docker-contained 
 
 ### Phase 6 — Sandbox Image Build & CI
 
+- [ ] **Build sandbox image before first run** — `docker build -t boss-man:sandbox ./sandcastle` is required before the orchestrator or any worker can execute. Workers will fail with "image not found" until this is done. Add to `install.sh` and document prominently.
 - [ ] `Makefile` target: `make sandbox` → `docker build -t boss-man:sandbox ./sandcastle`
 - [ ] Add `install.sh` step to build sandbox image on first run
 - [ ] Document BEADS_VERSION arg in Dockerfile (sync with host bd version)

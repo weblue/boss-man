@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import ReactMarkdown from 'react-markdown';
@@ -28,6 +28,7 @@ import {
   getRunEvents,
   getSession,
   getSessionTranscript,
+  listModels,
   listProjects,
   listRuns,
   listSessions,
@@ -134,6 +135,16 @@ function StatusBadge({ status }: { status: string }) {
       <span className={classNames(color, status === 'running' && 'animate-pulse')}>•</span>
       <span className={color}>{status}</span>
     </span>
+  );
+}
+
+function ThinkingIndicator() {
+  return (
+    <div className="flex items-center gap-1 pt-1">
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-muted [animation-delay:0ms]" />
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-muted [animation-delay:150ms]" />
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-muted [animation-delay:300ms]" />
+    </div>
   );
 }
 
@@ -354,6 +365,13 @@ function ChatTab({ project }: { project: Project }) {
   const [eventsByRun, setEventsByRun] = useState<Record<string, AgentEvent[]>>({});
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
+  const modelsQuery = useQuery({
+    queryKey: ['models'],
+    queryFn: listModels,
+    staleTime: 60_000,
+  });
+  const availableModels = modelsQuery.data ?? [];
+
   const sessionsQuery = useQuery({
     queryKey: ['sessions', project.id],
     queryFn: () => listSessions(project.id),
@@ -456,6 +474,14 @@ function ChatTab({ project }: { project: Project }) {
     replyMutation.mutate(draft.trim());
   };
 
+  const handleReplyKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!draft.trim() || !canReply) return;
+      replyMutation.mutate(draft.trim());
+    }
+  };
+
   return (
     <div className="flex h-full overflow-hidden">
       <div className="flex w-[300px] shrink-0 flex-col border-r border-border bg-base">
@@ -503,13 +529,20 @@ function ChatTab({ project }: { project: Project }) {
               </button>
             ))}
           </div>
-          <input
+          <select
             className="field mb-2"
-            placeholder={orchestratorBackend === 'anthropic' ? 'Claude model tier' : 'LiteLLM model alias'}
             value={orchestratorModel}
             disabled={startMutation.isPending}
-            onChange={(event) => updateModel(event.target.value)}
-          />
+            onChange={(e) => updateModel(e.target.value)}
+          >
+            {availableModels.length === 0 ? (
+              <option value={orchestratorModel}>{orchestratorModel}</option>
+            ) : (
+              availableModels.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))
+            )}
+          </select>
           <textarea
             className="field min-h-24 resize-none"
             placeholder="Initial spec..."
@@ -542,6 +575,7 @@ function ChatTab({ project }: { project: Project }) {
                   .map((event) => event.text)
                   .join('');
                 const toolEvents = runEvents.filter((event) => event.type === 'toolCall');
+                const running = isActive(run.status);
 
                 return (
                   <div key={run.id} className="flex flex-col gap-4">
@@ -565,7 +599,7 @@ function ChatTab({ project }: { project: Project }) {
                           <div className="text-xs text-red">{run.error}</div>
                         ) : (
                           <div className="flex items-center gap-2 text-xs text-text-muted">
-                            {isActive(run.status) && <Loader2 size={14} className="animate-spin" />}
+                            {running && <Loader2 size={14} className="animate-spin" />}
                             Waiting for output.
                           </div>
                         )}
@@ -578,6 +612,7 @@ function ChatTab({ project }: { project: Project }) {
                             ))}
                           </div>
                         )}
+                        {running && <ThinkingIndicator />}
                       </div>
                     </div>
                   </div>
@@ -595,9 +630,10 @@ function ChatTab({ project }: { project: Project }) {
         <form className="flex shrink-0 gap-2 border-t border-border bg-surface p-3" onSubmit={submitReply}>
           <textarea
             className="field min-h-12 resize-none"
-            placeholder={canReply ? 'Reply...' : 'Waiting for the current turn...'}
+            placeholder={canReply ? 'Reply… (Enter to send, Shift+Enter for newline)' : 'Waiting for the current turn...'}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={handleReplyKeyDown}
             disabled={!canReply || replyMutation.isPending}
           />
           <button className="icon-button h-12 w-12" title="Send reply" disabled={!canReply || replyMutation.isPending}>
@@ -702,7 +738,10 @@ function RunsTab({ project }: { project: Project }) {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedRunId = searchParams.get('run');
+
+  // Two selection modes: a worker run, or an orchestrator session group
   const [selectedRunId, setSelectedRunId] = useState<string | null>(() => requestedRunId);
+  const [selectedOrcSessionId, setSelectedOrcSessionId] = useState<string | null>(null);
   const [eventsByRun, setEventsByRun] = useState<Record<string, AgentEvent[]>>({});
 
   const runsQuery = useQuery({
@@ -711,45 +750,100 @@ function RunsTab({ project }: { project: Project }) {
     refetchInterval: 5000,
   });
 
-  useEffect(() => {
-    if (requestedRunId && requestedRunId !== selectedRunId) setSelectedRunId(requestedRunId);
-  }, [requestedRunId, selectedRunId]);
+  // Group runs: orchestrator turns → one entry per session; everything else → by role
+  const { orcSessions, workerRunsByRole } = useMemo(() => {
+    const sessionMap = new Map<string, Run[]>();
+    const roleMap = new Map<string, Run[]>();
+    for (const run of runsQuery.data ?? []) {
+      if (run.role === 'orchestrator' && run.orchestrator_session_id) {
+        const sid = run.orchestrator_session_id;
+        sessionMap.set(sid, [...(sessionMap.get(sid) ?? []), run]);
+      } else {
+        roleMap.set(run.role, [...(roleMap.get(run.role) ?? []), run]);
+      }
+    }
+    return { orcSessions: sessionMap, workerRunsByRole: roleMap };
+  }, [runsQuery.data]);
 
   useEffect(() => {
-    if (!selectedRunId && runsQuery.data?.[0]) setSelectedRunId(runsQuery.data[0].id);
-  }, [selectedRunId, runsQuery.data]);
+    if (requestedRunId && requestedRunId !== selectedRunId) {
+      setSelectedRunId(requestedRunId);
+      setSelectedOrcSessionId(null);
+    }
+  }, [requestedRunId, selectedRunId]);
+
+  // Auto-select first available item
+  useEffect(() => {
+    if (!selectedRunId && !selectedOrcSessionId) {
+      const firstSession = orcSessions.keys().next().value as string | undefined;
+      if (firstSession) {
+        setSelectedOrcSessionId(firstSession);
+      } else {
+        const firstWorkerRun = workerRunsByRole.values().next().value as Run[] | undefined;
+        if (firstWorkerRun?.[0]) setSelectedRunId(firstWorkerRun[0].id);
+      }
+    }
+  }, [selectedRunId, selectedOrcSessionId, orcSessions, workerRunsByRole]);
 
   const selectRun = (runId: string) => {
     setSelectedRunId(runId);
+    setSelectedOrcSessionId(null);
     setSearchParams({ run: runId });
   };
 
+  const selectOrcSession = (sessionId: string) => {
+    setSelectedOrcSessionId(sessionId);
+    setSelectedRunId(null);
+    setSearchParams({});
+  };
+
+  // Worker run detail
   const runQuery = useQuery({
     queryKey: ['run', selectedRunId],
     queryFn: () => getRun(selectedRunId!),
     enabled: !!selectedRunId,
-    refetchInterval: (query) => (isActive(query.state.data?.status) ? 2000 : false),
+    refetchInterval: (q) => (isActive(q.state.data?.status) ? 2000 : false),
   });
-
   const runEventsQuery = useQuery({
     queryKey: ['run-events', selectedRunId],
     queryFn: () => getRunEvents(selectedRunId!),
     enabled: !!selectedRunId,
   });
+  const selectedRun = runQuery.data ?? runsQuery.data?.find((r) => r.id === selectedRunId) ?? null;
 
-  const selectedRun = runQuery.data ?? runsQuery.data?.find((run) => run.id === selectedRunId) ?? null;
+  // Orchestrator session detail
+  const orcTurns = orcSessions.get(selectedOrcSessionId ?? '') ?? [];
+  const latestOrcTurn = orcTurns.at(-1) ?? null;
+  const orcTranscriptQuery = useQuery({
+    queryKey: ['session-transcript', selectedOrcSessionId],
+    queryFn: () => getSessionTranscript(selectedOrcSessionId!),
+    enabled: !!selectedOrcSessionId,
+    refetchInterval: isActive(latestOrcTurn?.status) ? 3000 : false,
+  });
+
+  // Stream active worker run events
   useEventStream(selectedRun && isActive(selectedRun.status) ? `/api/runs/${selectedRun.id}/events` : null, (event) => {
     if (!selectedRun) return;
-    setEventsByRun((prev) => ({
-      ...prev,
-      [selectedRun.id]: [...(prev[selectedRun.id] ?? []), event],
-    }));
+    setEventsByRun((prev) => ({ ...prev, [selectedRun.id]: [...(prev[selectedRun.id] ?? []), event] }));
     if (event.type === 'done' || event.type === 'error') {
       queryClient.invalidateQueries({ queryKey: ['runs', project.id] });
       queryClient.invalidateQueries({ queryKey: ['run', selectedRun.id] });
       queryClient.invalidateQueries({ queryKey: ['run-events', selectedRun.id] });
     }
   });
+
+  // Stream active orchestrator session events (latest turn)
+  useEventStream(
+    selectedOrcSessionId && isActive(latestOrcTurn?.status) ? `/api/sessions/${selectedOrcSessionId}/events` : null,
+    (event) => {
+      if (!latestOrcTurn) return;
+      setEventsByRun((prev) => ({ ...prev, [latestOrcTurn.id]: [...(prev[latestOrcTurn.id] ?? []), event] }));
+      if (event.type === 'done' || event.type === 'error') {
+        queryClient.invalidateQueries({ queryKey: ['runs', project.id] });
+        queryClient.invalidateQueries({ queryKey: ['session-transcript', selectedOrcSessionId] });
+      }
+    },
+  );
 
   const stopMutation = useMutation({
     mutationFn: cancelRun,
@@ -759,21 +853,67 @@ function RunsTab({ project }: { project: Project }) {
     },
   });
 
-  const runsByRole = useMemo(() => {
-    const groups = new Map<string, Run[]>();
-    for (const run of runsQuery.data ?? []) {
-      groups.set(run.role, [...(groups.get(run.role) ?? []), run]);
-    }
-    return groups;
-  }, [runsQuery.data]);
-
   const logEvents = selectedRun ? mergeEvents(runEventsQuery.data, eventsByRun[selectedRun.id]) : [];
+
+  const orcAllEvents = useMemo(() => {
+    const entries = orcTranscriptQuery.data ?? [];
+    return entries.flatMap(({ run, events }) => mergeEvents(events, eventsByRun[run.id]));
+  }, [orcTranscriptQuery.data, eventsByRun]);
+
+  const orcTotals = useMemo(() => orcTurns.reduce(
+    (acc, r) => ({
+      input: acc.input + r.total_input_tokens,
+      output: acc.output + r.total_output_tokens,
+      cacheNew: acc.cacheNew + r.total_cache_creation_tokens,
+      cacheRead: acc.cacheRead + r.total_cache_read_tokens,
+    }),
+    { input: 0, output: 0, cacheNew: 0, cacheRead: 0 },
+  ), [orcTurns]);
 
   return (
     <div className="flex h-full overflow-hidden">
+      {/* Left panel */}
       <div className="w-[360px] shrink-0 overflow-y-auto border-r border-border bg-base">
-        {runsByRole.size === 0 && <div className="p-4 text-xs text-text-muted">No runs.</div>}
-        {Array.from(runsByRole.entries()).map(([role, runs]) => (
+        {orcSessions.size === 0 && workerRunsByRole.size === 0 && (
+          <div className="p-4 text-xs text-text-muted">No runs.</div>
+        )}
+
+        {/* Orchestrator sessions — one entry per session */}
+        {orcSessions.size > 0 && (
+          <div>
+            <div className="border-b border-border bg-elevated/30 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-text-muted">
+              orchestrator
+            </div>
+            {Array.from(orcSessions.entries()).map(([sessionId, turns]) => {
+              const latest = turns.at(-1)!;
+              const n = turns.length;
+              return (
+                <button
+                  key={sessionId}
+                  className={classNames(
+                    'w-full border-b border-border border-l-2 px-3 py-3 text-left transition-colors hover:bg-elevated/50',
+                    selectedOrcSessionId === sessionId && 'bg-elevated',
+                  )}
+                  style={{ borderLeftColor: selectedOrcSessionId === sessionId ? accentFor(project.id) : 'transparent' }}
+                  onClick={() => selectOrcSession(sessionId)}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-xs font-semibold text-text-primary">
+                      Session {sessionId.slice(0, 8)}
+                    </span>
+                    <StatusBadge status={latest.status} />
+                  </div>
+                  <div className="mt-1 text-xs text-text-muted">
+                    {n} turn{n !== 1 ? 's' : ''} · {latest.model}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Worker runs grouped by role */}
+        {Array.from(workerRunsByRole.entries()).map(([role, runs]) => (
           <div key={role}>
             <div className="border-b border-border bg-elevated/30 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-text-muted">
               {role}
@@ -799,8 +939,62 @@ function RunsTab({ project }: { project: Project }) {
         ))}
       </div>
 
+      {/* Right panel */}
       <div className="flex min-w-0 flex-1 flex-col bg-base">
-        {selectedRun ? (
+        {selectedOrcSessionId && orcTurns.length > 0 ? (
+          <>
+            <div className="flex shrink-0 items-center gap-3 border-b border-border bg-surface px-4 py-3">
+              <Bot size={16} className="text-text-muted" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-semibold text-text-primary">
+                  Orchestrator · session {selectedOrcSessionId.slice(0, 8)}
+                </div>
+                <div className="truncate text-xs text-text-muted">
+                  {orcTurns.length} turn{orcTurns.length !== 1 ? 's' : ''} · {latestOrcTurn?.model}
+                  {orcTurns[0]?.started_at
+                    ? ` · ${formatDuration(orcTurns[0].started_at, latestOrcTurn?.completed_at ?? null)}`
+                    : ''}
+                </div>
+              </div>
+              <StatusBadge status={latestOrcTurn?.status ?? 'unknown'} />
+              {latestOrcTurn && isActive(latestOrcTurn.status) && (
+                <button
+                  className="icon-button"
+                  title="Cancel current turn"
+                  disabled={stopMutation.isPending}
+                  onClick={() => stopMutation.mutate(latestOrcTurn.id)}
+                >
+                  <Square size={14} />
+                </button>
+              )}
+            </div>
+            <div className="grid shrink-0 grid-cols-4 gap-px border-b border-border bg-border">
+              {([
+                ['input', orcTotals.input],
+                ['output', orcTotals.output],
+                ['cache new', orcTotals.cacheNew],
+                ['cache read', orcTotals.cacheRead],
+              ] as [string, number][]).map(([label, value]) => (
+                <div key={label} className="bg-surface px-4 py-3">
+                  <div className="text-[10px] uppercase tracking-widest text-text-muted">{label}</div>
+                  <div className="mt-1 text-sm text-text-primary">{value.toLocaleString()}</div>
+                </div>
+              ))}
+            </div>
+            <pre className="min-h-0 flex-1 overflow-auto bg-base p-4 text-xs leading-5 text-text-primary">
+              {orcAllEvents.length > 0
+                ? orcAllEvents
+                    .map((event) => {
+                      const prefix = event.type === 'toolCall' ? `$ ${event.toolName}` : event.type;
+                      return `[${formatDate(Date.parse(event.timestamp))}] ${prefix}: ${event.text ?? ''}`;
+                    })
+                    .join('\n')
+                : orcTranscriptQuery.isLoading
+                  ? 'Loading…'
+                  : 'No events captured.'}
+            </pre>
+          </>
+        ) : selectedRun ? (
           <>
             <div className="flex shrink-0 items-center gap-3 border-b border-border bg-surface px-4 py-3">
               <Terminal size={16} className="text-text-muted" />
@@ -837,10 +1031,12 @@ function RunsTab({ project }: { project: Project }) {
             </div>
             <pre className="min-h-0 flex-1 overflow-auto bg-base p-4 text-xs leading-5 text-text-primary">
               {logEvents.length > 0
-                ? logEvents.map((event) => {
-                    const prefix = event.type === 'toolCall' ? `$ ${event.toolName}` : event.type;
-                    return `[${formatDate(Date.parse(event.timestamp))}] ${prefix}: ${event.text ?? ''}`;
-                  }).join('\n')
+                ? logEvents
+                    .map((event) => {
+                      const prefix = event.type === 'toolCall' ? `$ ${event.toolName}` : event.type;
+                      return `[${formatDate(Date.parse(event.timestamp))}] ${prefix}: ${event.text ?? ''}`;
+                    })
+                    .join('\n')
                 : selectedRun.error ?? 'No live events captured for this run.'}
             </pre>
           </>
