@@ -1,4 +1,4 @@
-import { insertEvent } from './db.js';
+import { insertEvent, listEvents } from './db.js';
 
 type Subscriber = (event: AgentEvent) => void;
 
@@ -27,6 +27,20 @@ export function pushEvent(runId: string, event: AgentEvent) {
     timestamp: event.timestamp,
   });
   subscribers.get(runId)?.forEach((fn) => fn(event));
+}
+
+export function getPersistedEvents(runId: string): AgentEvent[] {
+  return listEvents(runId).flatMap((event) => {
+    try {
+      return [JSON.parse(event.data) as AgentEvent];
+    } catch {
+      return [{
+        type: event.type as AgentEvent['type'],
+        text: event.data,
+        timestamp: event.timestamp,
+      }];
+    }
+  });
 }
 
 export function cleanupRunStream(runId: string) {

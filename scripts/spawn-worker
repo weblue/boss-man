@@ -13,6 +13,7 @@
 #   --name          Display name for this run
 #   --max-iterations N (default: 10)
 #   --agent         claude-code|codex|opencode (default: claude-code)
+#   --claude-auth   anthropic|litellm (default: inherited from orchestrator)
 #   --beads-task-id bd-XXXX (links run to a Beads task)
 #   --wait          Block until run completes (polls every 5s)
 
@@ -27,6 +28,7 @@ MODEL=""
 NAME=""
 MAX_ITERATIONS=10
 AGENT="claude-code"
+CLAUDE_AUTH="${BOSS_MAN_CLAUDE_AUTH_PROVIDER:-}"
 BEADS_TASK_ID=""
 WAIT=false
 
@@ -38,6 +40,7 @@ while [[ $# -gt 0 ]]; do
     --name)          NAME="$2";          shift 2 ;;
     --max-iterations) MAX_ITERATIONS="$2"; shift 2 ;;
     --agent)         AGENT="$2";         shift 2 ;;
+    --claude-auth)   CLAUDE_AUTH="$2";   shift 2 ;;
     --beads-task-id) BEADS_TASK_ID="$2"; shift 2 ;;
     --wait)          WAIT=true;          shift ;;
     *) echo "Unknown flag: $1" >&2; exit 1 ;;
@@ -67,12 +70,14 @@ PAYLOAD=$(jq -cn \
   --arg name "$NAME" \
   --argjson maxIterations "$MAX_ITERATIONS" \
   --arg agentProvider "$AGENT" \
+  --arg claudeAuthProvider "$CLAUDE_AUTH" \
   --arg beadsTaskId "$BEADS_TASK_ID" \
   '{
     projectId: $projectId,
     role: $role,
     prompt: $prompt,
     agentProvider: $agentProvider,
+    claudeAuthProvider: (if $claudeAuthProvider != "" then $claudeAuthProvider else null end),
     maxIterations: $maxIterations,
     name: (if $name != "" then $name else null end),
     model: (if $model != "" then $model else null end),

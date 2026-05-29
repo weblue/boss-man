@@ -97,6 +97,7 @@ else
 
   # Generate random secrets
   LITELLM_MASTER_KEY="sk-boss-man-$(openssl rand -hex 16)"
+  LITELLM_API_KEY="$LITELLM_MASTER_KEY"
   LITELLM_SALT_KEY="$(openssl rand -hex 32)"
   POSTGRES_PASSWORD="$(openssl rand -hex 16)"
   DOLT_ROOT_PASSWORD="$(openssl rand -hex 16)"
@@ -109,6 +110,7 @@ else
 
   sed -i.bak \
     -e "s|LITELLM_MASTER_KEY=.*|LITELLM_MASTER_KEY=$LITELLM_MASTER_KEY|" \
+    -e "s|LITELLM_API_KEY=.*|LITELLM_API_KEY=$LITELLM_API_KEY|" \
     -e "s|LITELLM_SALT_KEY=.*|LITELLM_SALT_KEY=$LITELLM_SALT_KEY|" \
     -e "s|POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$POSTGRES_PASSWORD|" \
     -e "s|DOLT_ROOT_PASSWORD=.*|DOLT_ROOT_PASSWORD=$DOLT_ROOT_PASSWORD|" \
@@ -153,24 +155,70 @@ echo ""
 echo "── Building sandbox Docker image (boss-man:sandbox) ──"
 echo "   This installs Claude Code, prismo, and bd in the agent sandbox."
 
-docker build -t boss-man:sandbox -f sandcastle/Dockerfile . 2>&1 | grep -E "^(Step|#|ERROR|WARN|Successfully)" || true
+docker build -t "${SANDBOX_IMAGE:-boss-man:sandbox}" -f sandcastle/Dockerfile .
 ok "boss-man:sandbox image built"
 
-# ── 7. Initialize Beads with Dolt backend ─────────────────────────────────────
+echo "── Verifying sandbox Docker image ──"
+SANDBOX_TEST_CONTAINER="boss-man-sandbox-smoke-$$"
+docker rm -f "$SANDBOX_TEST_CONTAINER" >/dev/null 2>&1 || true
+docker run -d --name "$SANDBOX_TEST_CONTAINER" "${SANDBOX_IMAGE:-boss-man:sandbox}" >/dev/null
+if ! docker exec "$SANDBOX_TEST_CONTAINER" sh -lc \
+  'test -w "$HOME" && git config --global --add safe.directory /home/agent/workspace && command -v bd && command -v claude && command -v spawn-worker' >/dev/null; then
+  docker logs "$SANDBOX_TEST_CONTAINER" 2>/dev/null || true
+  docker rm -f "$SANDBOX_TEST_CONTAINER" >/dev/null 2>&1 || true
+  die "Sandbox image smoke test failed"
+fi
+docker rm -f "$SANDBOX_TEST_CONTAINER" >/dev/null
+ok "Sandbox image verified"
+
+# ── 7. Initialize Beads workspace ─────────────────────────────────────────────
 
 echo ""
-echo "── Configuring Beads to use Dolt (Docker) ──"
+echo "── Initializing Beads workspace ──"
 
 # Source .env to get Dolt config
 set -a; source .env; set +a
 
-# Beads server-mode config (connects to Dolt in Docker)
-bd config set store.provider dolt 2>/dev/null || true
-bd config set store.host "${BEADS_STORE_HOST:-127.0.0.1}" 2>/dev/null || true
-bd config set store.port "${BEADS_STORE_PORT:-3306}" 2>/dev/null || true
-bd config set store.password "${BEADS_STORE_PASSWORD:-}" 2>/dev/null || true
+# The dashboard Beads proxy runs bd from this repository root, so the root must
+# contain an initialized .beads workspace. Start Dolt first because bd is
+# configured to use the Docker sql-server in this stack.
+docker compose up -d dolt
+for i in $(seq 1 20); do
+  if docker compose ps dolt 2>/dev/null | grep -qi "running"; then
+    break
+  fi
+  sleep 1
+done
 
-ok "Beads configured for Dolt backend"
+for i in $(seq 1 30); do
+  if (echo >"/dev/tcp/${BEADS_STORE_HOST:-127.0.0.1}/${BEADS_STORE_PORT:-3306}") >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+export BEADS_DOLT_PASSWORD="${BEADS_STORE_PASSWORD:-${DOLT_ROOT_PASSWORD:-}}"
+
+if bd where >/dev/null 2>&1; then
+  ok "Beads workspace already initialized"
+else
+  bd init \
+    --non-interactive \
+    --server \
+    --external \
+    --server-host "${BEADS_STORE_HOST:-127.0.0.1}" \
+    --server-port "${BEADS_STORE_PORT:-3306}" \
+    --server-user root \
+    --database boss_man_dashboard \
+    --prefix boss-man \
+    --skip-agents \
+    --skip-hooks \
+    --setup-exclude
+  ok "Beads workspace initialized"
+fi
+
+bd list --json --all --limit 0 >/dev/null
+ok "Beads ready"
 
 echo ""
 echo "╔══════════════════════════════════════════════════╗"

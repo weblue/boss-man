@@ -11,6 +11,16 @@ const db = new Database(join(DATA_DIR, 'runs.db'));
 db.pragma('journal_mode = WAL');
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS orchestrator_sessions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    name TEXT,
+    status TEXT NOT NULL DEFAULT 'discovery',
+    current_run_id TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+  );
+
   CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
@@ -29,6 +39,8 @@ db.exec(`
     prompt TEXT NOT NULL,
     model TEXT NOT NULL,
     agent_provider TEXT NOT NULL DEFAULT 'claude-code',
+    claude_auth_provider TEXT NOT NULL DEFAULT 'anthropic',
+    orchestrator_session_id TEXT,
     sandbox_provider TEXT NOT NULL DEFAULT 'docker',
     branch TEXT NOT NULL,
     max_iterations INTEGER NOT NULL DEFAULT 10,
@@ -54,6 +66,14 @@ db.exec(`
     timestamp TEXT NOT NULL
   );
 `);
+
+const runColumns = db.prepare<[], { name: string }>('PRAGMA table_info(runs)').all();
+if (!runColumns.some((column) => column.name === 'claude_auth_provider')) {
+  db.exec("ALTER TABLE runs ADD COLUMN claude_auth_provider TEXT NOT NULL DEFAULT 'anthropic'");
+}
+if (!runColumns.some((column) => column.name === 'orchestrator_session_id')) {
+  db.exec('ALTER TABLE runs ADD COLUMN orchestrator_session_id TEXT');
+}
 
 // ── Projects ─────────────────────────────────────────────────────────────────
 
@@ -92,6 +112,8 @@ export interface Run {
   prompt: string;
   model: string;
   agent_provider: string;
+  claude_auth_provider: string;
+  orchestrator_session_id: string | null;
   sandbox_provider: string;
   branch: string;
   max_iterations: number;
@@ -111,13 +133,13 @@ export interface Run {
 const _insertRun = db.prepare(`
   INSERT INTO runs (
     id, project_id, name, role, status, prompt, model, agent_provider,
-    sandbox_provider, branch, max_iterations, created_at, started_at,
+    claude_auth_provider, orchestrator_session_id, sandbox_provider, branch, max_iterations, created_at, started_at,
     completed_at, error, total_input_tokens, total_output_tokens,
     total_cache_creation_tokens, total_cache_read_tokens,
     last_session_id, langfuse_trace_id, beads_task_id
   ) VALUES (
     @id, @project_id, @name, @role, @status, @prompt, @model, @agent_provider,
-    @sandbox_provider, @branch, @max_iterations, @created_at, @started_at,
+    @claude_auth_provider, @orchestrator_session_id, @sandbox_provider, @branch, @max_iterations, @created_at, @started_at,
     @completed_at, @error, @total_input_tokens, @total_output_tokens,
     @total_cache_creation_tokens, @total_cache_read_tokens,
     @last_session_id, @langfuse_trace_id, @beads_task_id
@@ -132,6 +154,11 @@ const _listRuns = db.prepare<[string], Run>(
   'SELECT * FROM runs WHERE project_id = ? ORDER BY created_at DESC'
 );
 export function listRuns(projectId: string): Run[] { return _listRuns.all(projectId); }
+
+const _listSessionRuns = db.prepare<[string], Run>(
+  'SELECT * FROM runs WHERE orchestrator_session_id = ? ORDER BY created_at ASC'
+);
+export function listSessionRuns(sessionId: string): Run[] { return _listSessionRuns.all(sessionId); }
 
 const _updateRun = db.prepare(`
   UPDATE runs SET
@@ -148,7 +175,34 @@ const _updateRun = db.prepare(`
   WHERE id = @id
 `);
 export function updateRun(id: string, fields: Partial<Run>) {
-  _updateRun.run({ id, ...fields });
+  _updateRun.run({
+    id,
+    status: null,
+    started_at: null,
+    completed_at: null,
+    error: null,
+    total_input_tokens: null,
+    total_output_tokens: null,
+    total_cache_creation_tokens: null,
+    total_cache_read_tokens: null,
+    last_session_id: null,
+    langfuse_trace_id: null,
+    ...fields,
+  });
+}
+
+const _markInterruptedRuns = db.prepare(`
+  UPDATE runs SET
+    status = 'failed',
+    completed_at = COALESCE(completed_at, @completed_at),
+    error = COALESCE(error, @error)
+  WHERE status IN ('queued', 'running')
+`);
+export function markInterruptedRuns() {
+  _markInterruptedRuns.run({
+    completed_at: Date.now(),
+    error: 'Server restarted before this in-memory run completed. Start a new run to retry.',
+  });
 }
 
 // ── Terminal events ────────────────────────────────────────────────────────────
@@ -171,4 +225,41 @@ const _listEvents = db.prepare<[string], TerminalEvent>(
 );
 export function listEvents(runId: string): TerminalEvent[] {
   return _listEvents.all(runId);
+}
+
+// ── Orchestrator Sessions ─────────────────────────────────────────────────────
+
+export interface OrchestratorSession {
+  id: string;
+  project_id: string;
+  name: string | null;
+  status: string;
+  current_run_id: string | null;
+  created_at: number;
+}
+
+const _insertSession = db.prepare(`
+  INSERT INTO orchestrator_sessions (id, project_id, name, status, current_run_id, created_at)
+  VALUES (@id, @project_id, @name, @status, @current_run_id, @created_at)
+`);
+export function insertSession(s: OrchestratorSession) { _insertSession.run(s); }
+
+const _getSession = db.prepare<[string], OrchestratorSession>(
+  'SELECT * FROM orchestrator_sessions WHERE id = ?'
+);
+export function getSession(id: string): OrchestratorSession | undefined { return _getSession.get(id); }
+
+const _listSessions = db.prepare<[string], OrchestratorSession>(
+  'SELECT * FROM orchestrator_sessions WHERE project_id = ? ORDER BY created_at DESC'
+);
+export function listSessions(projectId: string): OrchestratorSession[] { return _listSessions.all(projectId); }
+
+const _updateSession = db.prepare(`
+  UPDATE orchestrator_sessions SET
+    status = COALESCE(@status, status),
+    current_run_id = COALESCE(@current_run_id, current_run_id)
+  WHERE id = @id
+`);
+export function updateSession(id: string, fields: Partial<OrchestratorSession>) {
+  _updateSession.run({ id, status: null, current_run_id: null, ...fields });
 }

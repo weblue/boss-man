@@ -9,3 +9,11 @@ dist/
 .DS_Store
 .prismo/
 .cursorignore
+projects/*
+!projects/.gitkeep
+
+# Beads / Dolt files (added by bd init)
+.beads/
+.dolt/
+*.db
+.beads-credential-key

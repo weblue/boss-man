@@ -2,8 +2,8 @@ import { Hono } from 'hono';
 import { v4 as uuidv4 } from 'uuid';
 import { insertRun, getRun, listRuns, getProject } from '../db.js';
 import { startRun, cancelRun } from '../runner.js';
-import { subscribe, type AgentEvent } from '../streaming.js';
-import { defaultModelForRole } from '../config.js';
+import { getPersistedEvents, subscribe, type AgentEvent } from '../streaming.js';
+import { DEFAULT_AGENT_PROVIDER, defaultModelForRole, resolveClaudeAuthProvider } from '../config.js';
 
 const router = new Hono();
 
@@ -24,6 +24,13 @@ router.get('/api/runs/:id', (c) => {
   return c.json(run);
 });
 
+router.get('/api/runs/:id/events/history', (c) => {
+  const runId = c.req.param('id');
+  const run = getRun(runId);
+  if (!run) return c.json({ error: 'Not found' }, 404);
+  return c.json(getPersistedEvents(runId));
+});
+
 router.post('/api/runs', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body) return c.json({ error: 'Invalid JSON' }, 400);
@@ -31,7 +38,7 @@ router.post('/api/runs', async (c) => {
   const {
     projectId, role, prompt, model, name,
     agentProvider, sandboxProvider, maxIterations,
-    effort, beadsTaskId, resumeRunId,
+    effort, beadsTaskId, resumeRunId, claudeAuthProvider,
   } = body;
 
   if (!projectId) return c.json({ error: 'projectId is required' }, 400);
@@ -54,7 +61,8 @@ router.post('/api/runs', async (c) => {
   const id = uuidv4();
   const branch = `agent/${id.slice(0, 8)}`;
   const resolvedModel = model ?? defaultModelForRole(role);
-  const resolvedProvider = agentProvider ?? 'claude-code';
+  const resolvedProvider = agentProvider ?? DEFAULT_AGENT_PROVIDER;
+  const resolvedClaudeAuthProvider = resolveClaudeAuthProvider(claudeAuthProvider);
 
   insertRun({
     id,
@@ -65,6 +73,8 @@ router.post('/api/runs', async (c) => {
     prompt,
     model: resolvedModel,
     agent_provider: resolvedProvider,
+    claude_auth_provider: resolvedClaudeAuthProvider,
+    orchestrator_session_id: null,
     sandbox_provider: sandboxProvider ?? 'docker',
     branch,
     max_iterations: maxIterations ?? 10,
@@ -95,6 +105,7 @@ router.post('/api/runs', async (c) => {
     resumeSessionId,
     role,
     agentProvider: resolvedProvider,
+    claudeAuthProvider: resolvedClaudeAuthProvider,
     effort,
     beadsTaskId,
   }).catch(console.error);

@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { insertProject, listProjects, getProject } from '../db.js';
 import { PROJECTS_DIR } from '../config.js';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import { ensureRepoHasHead } from '../runner.js';
 
 const router = new Hono();
 
@@ -33,10 +34,12 @@ router.post('/api/projects', async (c) => {
   mkdirSync(repoPath, { recursive: true });
 
   if (repoUrl) {
-    execSync(`git clone ${repoUrl} ${repoPath}`, { stdio: 'inherit' });
+    execFileSync('git', ['clone', repoUrl, repoPath], { stdio: 'inherit' });
   } else {
-    execSync(`git init ${repoPath}`, { stdio: 'inherit' });
+    execFileSync('git', ['init', repoPath], { stdio: 'inherit' });
   }
+
+  ensureRepoHasHead(repoPath);
 
   // Prismo doctor is run by the orchestrator on first use, not during project creation.
   // Running it here blocks the request and can stall on large repos.

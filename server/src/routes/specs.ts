@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { getProject } from '../db.js';
 
 const router = new Hono();
@@ -13,6 +14,18 @@ function specDir(repoPath: string): string {
   return join(repoPath, '.spec');
 }
 
+function lastGitCommitAt(repoPath: string, relativePath: string): number | null {
+  try {
+    const output = execFileSync('git', ['-C', repoPath, 'log', '-1', '--format=%ct', '--', relativePath], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return output ? Number(output) * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
 // GET /api/projects/:id/specs — list all spec files
 router.get('/api/projects/:id/specs', (c) => {
   const project = getProject(c.req.param('id'));
@@ -23,7 +36,14 @@ router.get('/api/projects/:id/specs', (c) => {
 
   const files = readdirSync(dir)
     .filter((f) => f.endsWith('.md'))
-    .map((f) => ({ name: f, path: `.spec/${f}` }));
+    .map((f) => {
+      const path = `.spec/${f}`;
+      return {
+        name: f,
+        path,
+        last_commit_at: lastGitCommitAt(project.repo_path, path),
+      };
+    });
 
   return c.json(files);
 });

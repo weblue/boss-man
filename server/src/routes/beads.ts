@@ -6,13 +6,21 @@
 import { Hono } from 'hono';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const execFileAsync = promisify(execFile);
 const router = new Hono();
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(__dirname, '..', '..', '..');
 
 async function bd(...args: string[]): Promise<string> {
-  const { stdout, stderr } = await execFileAsync('bd', args, { timeout: 15_000 });
-  return (stdout + stderr).trim();
+  const { stdout, stderr } = await execFileAsync('bd', args, {
+    cwd: REPO_ROOT,
+    timeout: 15_000,
+    env: { ...process.env, BD_NON_INTERACTIVE: '1' },
+  });
+  return (stdout || stderr).trim();
 }
 
 // GET /api/beads/prime — inject context into agent session
@@ -20,7 +28,11 @@ router.get('/api/beads/prime', async (c) => {
   const projectDb = c.req.query('db');
   const env = projectDb ? { ...process.env, BD_DATABASE: projectDb } : undefined;
   try {
-    const { stdout } = await execFileAsync('bd', ['prime'], { timeout: 15_000, env });
+    const { stdout } = await execFileAsync('bd', ['prime'], {
+      cwd: REPO_ROOT,
+      timeout: 15_000,
+      env: { ...process.env, ...env, BD_NON_INTERACTIVE: '1' },
+    });
     return c.text(stdout);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -35,8 +47,7 @@ router.post('/api/beads/create', async (c) => {
 
   try {
     const args = ['create', body.description];
-    if (body.details) args.push('--body', body.details);
-    if (body.db) args.push('--database', body.db);
+    if (body.details) args.push('--description', body.details);
     const output = await bd(...args);
     // Extract the task ID from bd output (bd-XXXX format)
     const match = output.match(/bd-[a-f0-9]+/);
@@ -87,12 +98,12 @@ router.post('/api/beads/remember', async (c) => {
 // GET /api/beads/tasks — list all tasks (for UI task board)
 router.get('/api/beads/tasks', async (c) => {
   try {
-    const output = await bd('show', '--json');
+    const output = await bd('list', '--json', '--all', '--limit', '0');
     return c.json(JSON.parse(output));
   } catch {
     // Fall back to plain text if --json not supported
     try {
-      const output = await bd('show');
+      const output = await bd('list', '--all', '--limit', '0');
       return c.text(output);
     } catch (err2: unknown) {
       return c.json({ error: err2 instanceof Error ? err2.message : String(err2) }, 500);
@@ -103,7 +114,7 @@ router.get('/api/beads/tasks', async (c) => {
 // GET /api/beads/unblocked — tasks that have no unresolved blockers
 router.get('/api/beads/unblocked', async (c) => {
   try {
-    const output = await bd('ready');
+    const output = await bd('ready', '--json');
     return c.text(output);
   } catch (err: unknown) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);

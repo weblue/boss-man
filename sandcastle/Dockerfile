@@ -12,17 +12,10 @@ RUN npm install -g @anthropic-ai/claude-code
 # PrismoDev (token efficiency)
 RUN npm install -g getprismo
 
-# Beads CLI — installed from GitHub releases to match host bd version
-ARG BEADS_VERSION=v1.0.4
-RUN ARCH="$(dpkg --print-architecture)" && \
-    case "$ARCH" in \
-      amd64) BEADS_ARCH="linux-amd64" ;; \
-      arm64) BEADS_ARCH="linux-arm64" ;; \
-      *) echo "Unsupported arch: $ARCH" && exit 1 ;; \
-    esac && \
-    curl -fsSL "https://github.com/gastownhall/beads/releases/download/${BEADS_VERSION}/bd-${BEADS_ARCH}" \
-      -o /usr/local/bin/bd && \
-    chmod +x /usr/local/bin/bd
+# Beads CLI. Use the npm package instead of hardcoded GitHub release asset
+# names, which have changed across Beads releases.
+ARG BEADS_VERSION=1.0.4
+RUN npm install -g "@beads/bd@${BEADS_VERSION}"
 
 # spawn-worker CLI (copied at build time; bind-mounted at runtime in dev)
 COPY scripts/spawn-worker /usr/local/bin/spawn-worker
@@ -32,9 +25,11 @@ RUN chmod +x /usr/local/bin/spawn-worker
 RUN git config --global user.email "boss-man-agent@localhost" && \
     git config --global user.name "Boss Man Agent"
 
+RUN mkdir -p /home/agent && chmod 777 /home/agent
+
 WORKDIR /workspace
 
 # Claude Code: skip interactive permission prompts in headless mode
 ENV CLAUDE_CODE_UNSAFE_SKIP_PERMISSIONS=1
 
-CMD ["bash"]
+CMD ["sleep", "infinity"]

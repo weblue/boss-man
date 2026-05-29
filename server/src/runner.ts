@@ -12,13 +12,21 @@ import { noSandbox } from '@ai-hero/sandcastle/sandboxes/no-sandbox';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { updateRun } from './db.js';
 import { pushEvent, cleanupRunStream } from './streaming.js';
 import {
+  CLAUDE_CODE_AUTH_MODE,
+  CLAUDE_CODE_OAUTH_TOKEN,
+  type ClaudeAuthProvider,
   CONTAINER_ENV,
   SANDBOX_IMAGE,
+  claudeAuthContainerEnv,
   PROMPTS_DIR,
   defaultModelForRole,
+  resolveClaudeAuthProvider,
+  resolveClaudeCodeModel,
   resolveTier,
 } from './config.js';
 
@@ -41,6 +49,7 @@ export interface StartRunOptions {
   resumeSessionId?: string;
   role: string;
   agentProvider?: string;
+  claudeAuthProvider?: string;
   effort?: string;
   beadsTaskId?: string;
 }
@@ -63,23 +72,48 @@ function buildPrompt(prompt: string, role: string): string {
   return template.replace(/\{\{USER_TASK\}\}/g, prompt);
 }
 
-function getSandbox(provider: string) {
-  if (provider === 'docker') return docker({ env: CONTAINER_ENV, imageName: SANDBOX_IMAGE });
+function claudeCredentialMounts(provider: ClaudeAuthProvider) {
+  if (provider !== 'anthropic' || CLAUDE_CODE_AUTH_MODE !== 'login' || CLAUDE_CODE_OAUTH_TOKEN) return [];
+  const home = homedir();
+  return [
+    { hostPath: join(home, '.claude'), sandboxPath: '/home/agent/.claude' },
+    { hostPath: join(home, '.claude.json'), sandboxPath: '/home/agent/.claude.json' },
+  ].filter((mount) => existsSync(mount.hostPath));
+}
+
+function getSandbox(provider: string, claudeAuthProvider: ClaudeAuthProvider, extraEnv?: Record<string, string>) {
+  if (provider === 'docker') {
+    return docker({
+      env: { ...CONTAINER_ENV, ...claudeAuthContainerEnv(claudeAuthProvider), ...extraEnv },
+      imageName: SANDBOX_IMAGE,
+      mounts: claudeCredentialMounts(claudeAuthProvider),
+    });
+  }
   return noSandbox();
 }
 
-function getAgentProvider(agentProvider: string, model: string, role: string, effort?: string): AgentProvider {
-  const resolvedModel = resolveTier(model) || defaultModelForRole(role);
+function getAgentProvider(
+  agentProvider: string,
+  model: string,
+  role: string,
+  effort: string | undefined,
+  claudeAuthProvider: ClaudeAuthProvider,
+): AgentProvider {
   const shortLivedRoles = new Set(['reviewer', 'security_reviewer', 'researcher', 'test_generator']);
 
   if (agentProvider === 'codex') {
+    const resolvedModel = resolveTier(model) || defaultModelForRole(role);
     const e = effort as 'low' | 'medium' | 'high' | 'xhigh' | undefined;
     return codex(resolvedModel, { ...(e ? { effort: e } : {}) });
   }
   if (agentProvider === 'opencode') {
+    const resolvedModel = resolveTier(model) || defaultModelForRole(role);
     return opencode(resolvedModel);
   }
   // Default: claude-code
+  const resolvedModel = claudeAuthProvider === 'litellm'
+    ? (resolveTier(model) || defaultModelForRole(role))
+    : resolveClaudeCodeModel(model, role);
   const e = effort as 'low' | 'medium' | 'high' | 'max' | undefined;
   return claudeCode(resolvedModel, {
     ...(e ? { effort: e } : {}),
@@ -103,24 +137,68 @@ function sumUsage(iterations: readonly { usage?: IterationUsage }[]) {
   );
 }
 
+export function ensureRepoHasHead(repoPath: string): void {
+  try {
+    execFileSync('git', ['-C', repoPath, 'rev-parse', '--verify', 'HEAD'], { stdio: 'ignore' });
+    return;
+  } catch {
+    // Sandcastle branchStrategy needs HEAD. Fresh dashboard-created projects
+    // start as empty git repos, so create a harmless baseline commit.
+  }
+
+  execFileSync('git', ['-C', repoPath, 'commit', '--allow-empty', '-m', 'chore: initial project commit'], {
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? 'Boss Man',
+      GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL ?? 'boss-man@localhost',
+      GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME ?? 'Boss Man',
+      GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL ?? 'boss-man@localhost',
+    },
+  });
+}
+
+function runFailureMessage(message: string): string {
+  if (message.includes('Image') && message.includes('not found locally')) {
+    return [
+      message,
+      '',
+      'Run marked failed because the sandbox Docker image is missing. Run ./install.sh to build it, then start a new session to retry.',
+    ].join('\n');
+  }
+
+  return [
+    message,
+    '',
+    'Run marked failed. Start a new session, or send another reply after the current session is no longer running, to retry.',
+  ].join('\n');
+}
+
 export async function startRun(options: StartRunOptions): Promise<void> {
   const abortController = new AbortController();
   activeRuns.set(options.id, abortController);
 
   updateRun(options.id, { status: 'running', started_at: Date.now() });
 
+  const claudeAuthProvider = resolveClaudeAuthProvider(options.claudeAuthProvider);
   const resolvedModel = resolveTier(options.model) || defaultModelForRole(options.role);
   const fullPrompt = buildPrompt(options.prompt, options.role);
 
   try {
+    ensureRepoHasHead(options.repoPath);
+
     const result = await sandcastleRun({
       agent: getAgentProvider(
         options.agentProvider ?? 'claude-code',
         resolvedModel,
         options.role,
         options.effort,
+        claudeAuthProvider,
       ),
-      sandbox: getSandbox(options.sandboxProvider),
+      sandbox: getSandbox(options.sandboxProvider, claudeAuthProvider, {
+        BOSS_MAN_PROJECT_ID: options.projectId,
+        BOSS_MAN_CLAUDE_AUTH_PROVIDER: claudeAuthProvider,
+      }),
       cwd: options.repoPath,
       prompt: fullPrompt,
       maxIterations: options.maxIterations,
@@ -161,8 +239,9 @@ export async function startRun(options: StartRunOptions): Promise<void> {
       updateRun(options.id, { status: 'cancelled', completed_at: Date.now() });
     } else {
       const msg = err instanceof Error ? err.message : String(err);
-      updateRun(options.id, { status: 'failed', completed_at: Date.now(), error: msg });
-      pushEvent(options.id, { type: 'error', text: msg, timestamp: new Date().toISOString() });
+      const error = runFailureMessage(msg);
+      updateRun(options.id, { status: 'failed', completed_at: Date.now(), error });
+      pushEvent(options.id, { type: 'error', text: error, timestamp: new Date().toISOString() });
     }
   } finally {
     activeRuns.delete(options.id);
