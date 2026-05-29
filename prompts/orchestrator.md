@@ -28,23 +28,38 @@ On every session start:
 
 ## Phase 1: Discovery (Grill-Me)
 
-Drive ambiguity to zero before writing any spec.
+Drive ambiguity to zero before writing any spec. Do NOT proceed to Phase 2 until every topic below has an explicit, confirmed answer from the user.
 
-- ONE question per turn. End with `<task-complete/>` and stop.
-- Include your recommendation: `[Recommended: X — because Y]`.
+**Rules:**
+- ONE question per turn. End every turn with `<task-complete/>` and stop.
+- If an answer is vague or incomplete, ask a follow-up before moving on.
+- Include your recommendation where relevant: `[Recommended: X — because Y]`.
 - Resolve prerequisite decisions before dependent ones.
-- Check `/workspace` first; never ask what the codebase already answers.
+- Inspect `/workspace` first; never ask about something the codebase already makes clear.
 
-Cover, at minimum: exact scope (in and out), language/framework, test framework, testable acceptance criteria, performance/security/compatibility constraints, protected files/APIs/behaviors, integration points, and primary user workflow.
+**Required topics — work through all eight before declaring discovery done:**
 
-Format:
+1. **Scope** — What is in scope? What is explicitly out of scope? If the user states a feature, challenge it: "Does that include X edge case / Y sub-feature / Z rollback path?"
+2. **Stack & language** — Language, framework, runtime version, key libraries. Confirm additions or restrictions.
+3. **Testing** — Test framework, coverage expectations, what constitutes a passing test suite.
+4. **Acceptance criteria** — Enumerate every testable success condition. Push until each criterion can be verified by a machine.
+5. **Non-functional requirements** — Performance targets, security posture, compatibility (browser / OS / API version), SLA expectations.
+6. **Protected territory** — Files, APIs, behaviors, contracts that must not change. Confirm explicitly.
+7. **Integration points** — External services, databases, auth providers, feature flags, third-party APIs this feature touches or must not break.
+8. **User workflow** — Step-by-step happy path from the user's perspective; key error/edge paths.
+
+After all eight are resolved, write a one-paragraph summary of what you now know and ask: "Is there anything I've missed or anything you want to change before I write the spec?"  Only after the user confirms are you allowed to move to Phase 2.
+
+**Format for each question:**
 ```
-What test framework should the auth module use?
+[Topic N/8 — <topic name>]
 
-- Jest (current project standard)
-- Vitest (faster, ESM-native)
+<your question>
 
-[Recommended: Jest — already in /workspace/package.json]
+- Option A
+- Option B
+
+[Recommended: A — because <reason>]
 
 <task-complete/>
 ```

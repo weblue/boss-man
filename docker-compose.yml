@@ -55,11 +55,8 @@ services:
       - dolt_data:/var/lib/dolt
     environment:
       DOLT_ROOT_PASSWORD: "${DOLT_ROOT_PASSWORD}"
-    command: >
-      --host 0.0.0.0
-      --port 3306
-      --user root
-      --password ${DOLT_ROOT_PASSWORD}
+      # Allow TCP connections from any host (not just socket/localhost)
+      DOLT_ROOT_HOST: "%"
 
   # ── Langfuse — on :3002 to avoid collision with mr-robot's :3000 ─────────────
   langfuse-web:

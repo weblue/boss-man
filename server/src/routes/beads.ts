@@ -8,17 +8,24 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BEADS_STORE_PASSWORD } from '../config.js';
 
 const execFileAsync = promisify(execFile);
 const router = new Hono();
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 
+// bd CLI uses BEADS_DOLT_PASSWORD; our .env exports it as BEADS_STORE_PASSWORD
+const BD_ENV: Record<string, string> = {
+  BD_NON_INTERACTIVE: '1',
+  ...(BEADS_STORE_PASSWORD ? { BEADS_DOLT_PASSWORD: BEADS_STORE_PASSWORD } : {}),
+};
+
 async function bd(...args: string[]): Promise<string> {
   const { stdout, stderr } = await execFileAsync('bd', args, {
     cwd: REPO_ROOT,
     timeout: 15_000,
-    env: { ...process.env, BD_NON_INTERACTIVE: '1' },
+    env: { ...process.env, ...BD_ENV },
   });
   return (stdout || stderr).trim();
 }
@@ -26,12 +33,15 @@ async function bd(...args: string[]): Promise<string> {
 // GET /api/beads/prime — inject context into agent session
 router.get('/api/beads/prime', async (c) => {
   const projectDb = c.req.query('db');
-  const env = projectDb ? { ...process.env, BD_DATABASE: projectDb } : undefined;
   try {
     const { stdout } = await execFileAsync('bd', ['prime'], {
       cwd: REPO_ROOT,
       timeout: 15_000,
-      env: { ...process.env, ...env, BD_NON_INTERACTIVE: '1' },
+      env: {
+        ...process.env,
+        ...BD_ENV,
+        ...(projectDb ? { BD_DATABASE: projectDb } : {}),
+      },
     });
     return c.text(stdout);
   } catch (err: unknown) {
