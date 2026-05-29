@@ -31,8 +31,11 @@ import {
 } from './config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const LOGS_DIR = join(__dirname, '..', '..', 'data', 'logs');
+const DATA_DIR = join(__dirname, '..', '..', 'data');
+const LOGS_DIR = join(DATA_DIR, 'logs');
+const SESSIONS_DIR = join(DATA_DIR, 'claude-sessions');
 mkdirSync(LOGS_DIR, { recursive: true });
+mkdirSync(SESSIONS_DIR, { recursive: true });
 
 const activeRuns = new Map<string, AbortController>();
 
@@ -81,12 +84,29 @@ function claudeCredentialMounts(provider: ClaudeAuthProvider) {
   ].filter((mount) => existsSync(mount.hostPath));
 }
 
-function getSandbox(provider: string, claudeAuthProvider: ClaudeAuthProvider, extraEnv?: Record<string, string>) {
+function getSandbox(
+  provider: string,
+  claudeAuthProvider: ClaudeAuthProvider,
+  projectId: string,
+  extraEnv?: Record<string, string>,
+) {
   if (provider === 'docker') {
+    const credMounts = claudeCredentialMounts(claudeAuthProvider);
+
+    // When not mounting the host ~/.claude (litellm backend, or anthropic with an
+    // explicit OAuth token), persist Claude Code's session cache to a per-project
+    // host directory so conversation sessions survive container and server restarts.
+    const sessionMounts: typeof credMounts = [];
+    if (credMounts.length === 0) {
+      const sessionDir = join(SESSIONS_DIR, projectId);
+      mkdirSync(sessionDir, { recursive: true });
+      sessionMounts.push({ hostPath: sessionDir, sandboxPath: '/home/agent/.claude' });
+    }
+
     return docker({
       env: { ...CONTAINER_ENV, ...claudeAuthContainerEnv(claudeAuthProvider), ...extraEnv },
       imageName: SANDBOX_IMAGE,
-      mounts: claudeCredentialMounts(claudeAuthProvider),
+      mounts: [...credMounts, ...sessionMounts],
     });
   }
   return noSandbox();
@@ -195,7 +215,7 @@ export async function startRun(options: StartRunOptions): Promise<void> {
         options.effort,
         claudeAuthProvider,
       ),
-      sandbox: getSandbox(options.sandboxProvider, claudeAuthProvider, {
+      sandbox: getSandbox(options.sandboxProvider, claudeAuthProvider, options.projectId, {
         BOSS_MAN_PROJECT_ID: options.projectId,
         BOSS_MAN_CLAUDE_AUTH_PROVIDER: claudeAuthProvider,
       }),
