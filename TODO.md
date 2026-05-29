@@ -44,7 +44,7 @@ Build the React frontend in `ui/` workspace. Uncomment the `npm run dev --worksp
 - [x] New project form (name, description, optional repoUrl)
 - [x] Project detail page with tab nav: Chat | Tasks | Runs | Spec
 - [x] Assign each project a random accent color on creation (seeded from project ID so it's stable across reloads); use for sidebar indicator, tab header, and session avatars
-- [ ] Make the project color more prominent — use it as a full-width header bar or bold left-border stripe on the project detail page, not just a small dot/chip
+- [x] Make the project color more prominent — use it as a full-width header bar or bold left-border stripe on the project detail page, not just a small dot/chip
 
 #### 3c — Discovery Chat tab
 - [x] `GET /api/projects/:id/sessions` — list sessions; "New Session" button
@@ -121,6 +121,19 @@ Goal: the web UI should expose the full useful experience of a Docker-contained 
 - [ ] `GET /api/beads/tasks?db=projectName` — scoped task list per project
 - [ ] Session auth (simple API key gate on all `/api/*` routes) for network exposure
 - [ ] Project archiving / deletion
+
+---
+
+### Phase 8 — LiteLLM Rules-Based Routing
+
+Goal: replace static `boss-man/high|medium|low` tier aliases with intelligent rules-based routing so the right model is selected automatically based on context (token count, task type, cost budget, latency requirements).
+
+- [ ] **Research routing strategies**: evaluate LiteLLM's `router_settings` options — `simple-shuffle`, `least-busy`, `latency-based`, `cost-based`, `usage-based` — and decide which fits the orchestrator/worker split best.
+- [ ] **Define routing rules**: configure per-role rules in `litellm-config.yaml` (e.g. orchestrator always → Opus, reviewer → Opus, implementer/test_generator → Sonnet, refactor/formatter → Haiku).
+- [ ] **Fallback chains**: set up model fallback sequences so if Opus is rate-limited it falls through to Sonnet automatically; surface the fallback in Langfuse traces.
+- [ ] **Cost guardrails**: add `max_budget` and `budget_duration` per virtual key or routing group so runaway sessions don't drain the API budget.
+- [ ] **Context-length routing**: route to Claude's larger context window automatically when prompt + history exceeds a threshold (e.g. >80k tokens → prefer long-context variant).
+- [ ] **UI exposure**: show the resolved model (after routing) in the run detail alongside the requested tier, so it's clear which model actually ran.
 
 ---
 

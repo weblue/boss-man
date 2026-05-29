@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { LITELLM_HOST, LITELLM_PORT, LITELLM_API_KEY } from '../config.js';
+import { LITELLM_HOST, LITELLM_PORT, LITELLM_MASTER_KEY } from '../config.js';
 
 const router = new Hono();
 
@@ -7,7 +7,7 @@ const router = new Hono();
 router.get('/api/models', async (c) => {
   try {
     const res = await fetch(`http://${LITELLM_HOST}:${LITELLM_PORT}/v1/models`, {
-      headers: { Authorization: `Bearer ${LITELLM_API_KEY}` },
+      headers: { Authorization: `Bearer ${LITELLM_MASTER_KEY}` },
     });
     if (!res.ok) return c.json({ models: [] });
     const data = await res.json() as { data?: { id: string }[] };

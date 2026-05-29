@@ -311,11 +311,14 @@ function ProjectRoute() {
     { id: 'spec', label: 'Spec', icon: FileText },
   ];
 
+  const accent = accentFor(project.id);
+
   return (
     <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
       <header className="shrink-0 border-b border-border bg-surface">
+        {/* Full-width accent bar — project identity stripe */}
+        <div className="h-1 w-full" style={{ backgroundColor: accent }} />
         <div className="flex items-center gap-3 px-4 py-3">
-          <div className="h-8 w-1 rounded-sm" style={{ backgroundColor: accentFor(project.id) }} />
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold text-text-primary">{project.name}</div>
             <div className="truncate text-xs text-text-muted">{project.repo_path}</div>
@@ -330,6 +333,7 @@ function ProjectRoute() {
                 key={item.id}
                 to={`/projects/${project.id}/${item.id}`}
                 className={({ isActive }) => classNames('tab', isActive && 'tab-active')}
+                style={({ isActive }) => isActive ? { borderBottomColor: accent } : undefined}
               >
                 <Icon size={14} />
                 {item.label}
