@@ -133,6 +133,7 @@ router.post('/api/projects/:projectId/sessions', async (c) => {
     role: 'orchestrator',
     agentProvider: runtime.agentProvider,
     claudeAuthProvider: runtime.claudeAuthProvider,
+    orchestratorSessionId: sessionId,
   }).catch(console.error);
 
   return c.json({ session: getSession(sessionId), run: getRun(runId) }, 201);
@@ -163,6 +164,34 @@ router.get('/api/sessions/:id/transcript', (c) => {
   })));
 });
 
+// PATCH /api/sessions/:id — update mutable session fields (status, name)
+// Called by the orchestrator from inside the sandbox to report phase transitions.
+router.patch('/api/sessions/:id', async (c) => {
+  const session = getSession(c.req.param('id'));
+  if (!session) return c.json({ error: 'Not found' }, 404);
+
+  const body = await c.req.json().catch(() => null);
+  if (!body) return c.json({ error: 'JSON body required' }, 400);
+
+  const VALID_STATUSES = new Set(['discovery', 'planning', 'executing', 'complete']);
+  const updates: Partial<OrchestratorSession> = {};
+
+  if (typeof body.status === 'string') {
+    if (!VALID_STATUSES.has(body.status)) {
+      return c.json({ error: `Invalid status. Must be one of: ${[...VALID_STATUSES].join(', ')}` }, 400);
+    }
+    updates.status = body.status;
+  }
+  if (typeof body.name === 'string' && body.name.trim()) {
+    updates.name = body.name.trim();
+  }
+
+  if (Object.keys(updates).length === 0) return c.json({ error: 'No valid fields to update' }, 400);
+
+  updateSession(session.id, updates);
+  return c.json(getSession(session.id));
+});
+
 // POST /api/sessions/:id/reply — resume orchestrator with user's answer
 router.post('/api/sessions/:id/reply', async (c) => {
   const session = getSession(c.req.param('id'));
@@ -179,7 +208,13 @@ router.post('/api/sessions/:id/reply', async (c) => {
     return c.json({ error: 'Current turn is still running' }, 409);
   }
 
-  const resumeSessionId = prevRun?.last_session_id ?? undefined;
+  // Find the most recent Claude Code session ID captured by any run in this session.
+  // We scan all runs (not just current_run_id) so a cancelled or failed turn doesn't
+  // break resumption — we fall back to the last stable completed-iteration snapshot.
+  const allSessionRuns = listSessionRuns(session.id);
+  const resumeSessionId =
+    [...allSessionRuns].reverse().find((r) => r.last_session_id != null)?.last_session_id ?? undefined;
+
   const branch = prevRun?.branch ?? `orchestrator/${session.id.slice(0, 8)}`;
   const runtime = runtimeFromBody(body, prevRun ? {
     agentProvider: prevRun.agent_provider,
@@ -205,6 +240,7 @@ router.post('/api/sessions/:id/reply', async (c) => {
     agentProvider: runtime.agentProvider,
     claudeAuthProvider: runtime.claudeAuthProvider,
     resumeSessionId,
+    orchestratorSessionId: session.id,
   }).catch(console.error);
 
   return c.json({ session: getSession(session.id), run: getRun(runId) });

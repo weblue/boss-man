@@ -91,7 +91,11 @@ export async function startSession(projectId: string, payload: {
   );
 }
 
-export async function replyToSession(sessionId: string, message: string): Promise<{
+export async function replyToSession(
+  sessionId: string,
+  message: string,
+  options?: { model?: string },
+): Promise<{
   session: Session;
   run: Run;
 }> {
@@ -99,7 +103,7 @@ export async function replyToSession(sessionId: string, message: string): Promis
     await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/reply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, ...(options?.model ? { model: options.model } : {}) }),
     }),
   );
 }

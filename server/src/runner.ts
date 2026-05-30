@@ -55,6 +55,8 @@ export interface StartRunOptions {
   claudeAuthProvider?: string;
   effort?: string;
   beadsTaskId?: string;
+  /** Orchestrator session ID — injected as BOSS_MAN_SESSION_ID so the agent can PATCH its own status. */
+  orchestratorSessionId?: string;
 }
 
 const WORKER_PROMPT_FILES: Record<string, string> = {
@@ -218,6 +220,7 @@ export async function startRun(options: StartRunOptions): Promise<void> {
       sandbox: getSandbox(options.sandboxProvider, claudeAuthProvider, options.projectId, {
         BOSS_MAN_PROJECT_ID: options.projectId,
         BOSS_MAN_CLAUDE_AUTH_PROVIDER: claudeAuthProvider,
+        ...(options.orchestratorSessionId ? { BOSS_MAN_SESSION_ID: options.orchestratorSessionId } : {}),
       }),
       cwd: options.repoPath,
       prompt: fullPrompt,

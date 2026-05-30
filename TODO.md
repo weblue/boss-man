@@ -60,6 +60,7 @@ Build the React frontend in `ui/` workspace. Uncomment the `npm run dev --worksp
 - [x] Model selector should be a dropdown (populated from `GET /api/models` proxied from LiteLLM) not a raw text input
 - [x] Chat transcript must only show orchestrator turns (runs with `orchestrator_session_id` set); worker/sub-agent runs spawned by the orchestrator must not appear in the chat view — they belong in the Runs tab only
 - [x] Runs tab: orchestrator turns grouped into one entry per session (shows turn count + cumulative tokens); worker runs remain individual entries by role
+- [x] **Mid-session model switching**: model picker visible in reply area at all times; "cancel & switch" button when a run is active; model passed with every reply so it takes effect immediately; backend fixed to find the best available `last_session_id` across all session runs so context survives a cancelled turn
 
 #### 3d — Task Board tab
 - [x] `GET /api/beads/tasks` — render kanban or table by status (open / in-progress / done)
@@ -95,13 +96,16 @@ Goal: the web UI should expose the full useful experience of a Docker-contained 
 
 ### Phase 5 — Worker Improvements
 
-- [ ] **Refactor role prompt**: add `prompts/workers/refactor.md` (currently missing — `WORKER_PROMPT_FILES` references it but file doesn't exist)
-- [ ] **Session status updates**: after orchestrator completes discovery, update `session.status = 'planning'`; after all tasks done, `status = 'complete'`. Requires orchestrator to POST `BOSS_MAN_API_URL/api/sessions/:id/status`.
-- [ ] **Add `PATCH /api/sessions/:id`** endpoint so orchestrator can update its own status mid-run
-- [ ] **Langfuse trace linking**: capture `x-langfuse-trace-id` response header from LiteLLM and store in `runs.langfuse_trace_id`. Surface in UI run detail.
-- [ ] **Token budget display**: show per-session cumulative token usage (sum all runs for session)
-- [ ] **bd CLI verification**: confirm `bd config set store.host host.docker.internal` works inside sandbox so orchestrator can call `bd` directly if needed (alternative to API proxy)
-- [ ] **prismo doctor on session start**: ensure orchestrator triggers `getprismo doctor` on first session for a project; store result in `.prismo/`
+- [x] **Refactor role prompt**: `prompts/workers/refactor.md` created
+- [x] **Worker model tiers**: tier header added to all worker prompts; orchestrator has canonical role→model table
+- [x] **Session status updates**: orchestrator `curl`s `PATCH /api/sessions/$BOSS_MAN_SESSION_ID` at Phase 1→planning, Phase 3→executing, Phase 4→complete
+- [x] **`PATCH /api/sessions/:id`** endpoint: accepts `{ status, name }`; validates status values; used by orchestrator from inside sandbox
+- [x] **`BOSS_MAN_SESSION_ID`** injected into sandbox env for all orchestrator runs (first turn and replies)
+- [x] **Token budget display**: cumulative input/output/cache tokens shown per session in the chat view (computed from runs already in `sessionQuery.data`)
+- [x] **prismo doctor on session start**: already present in orchestrator startup section (step 4)
+- [ ] **Orchestrator tool restrictions** *(blocked)*: `ClaudeCodeOptions` in Sandcastle SDK does not expose `--allowedTools`; needs upstream support or a workaround. Prompt-level enforcement is the current mitigation.
+- [ ] **Langfuse trace linking**: capture `x-langfuse-trace-id` response header from LiteLLM and store in `runs.langfuse_trace_id`. Surface in UI run detail. Complex — traces are created inside the sandbox by Claude Code's LiteLLM calls; no direct header access from the runner.
+- [ ] **bd CLI verification**: operational task — confirm `bd config set store.host host.docker.internal` works inside sandbox; no code change needed, just a test run.
 
 ---
 
@@ -149,6 +153,7 @@ Goal: replace static `boss-man/high|medium|low` tier aliases with intelligent ru
 | GET | `/api/projects/:id/sessions` | List orchestrator sessions |
 | POST | `/api/projects/:id/sessions` | Start orchestrator session |
 | GET | `/api/sessions/:id` | Get session + current run |
+| PATCH | `/api/sessions/:id` | Update session status or name (called by orchestrator) |
 | POST | `/api/sessions/:id/reply` | Send user reply, resume orchestrator |
 | GET | `/api/sessions/:id/events` | SSE stream for current run |
 | POST | `/api/runs` | Enqueue worker run |

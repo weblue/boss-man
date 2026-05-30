@@ -434,8 +434,18 @@ function ChatTab({ project }: { project: Project }) {
     },
   });
 
+  const cancelCurrentMutation = useMutation({
+    mutationFn: () => cancelRun(currentRunId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['session', selectedSessionId] });
+      queryClient.invalidateQueries({ queryKey: ['sessions', project.id] });
+      queryClient.invalidateQueries({ queryKey: ['runs', project.id] });
+    },
+  });
+
   const replyMutation = useMutation({
-    mutationFn: (message: string) => replyToSession(selectedSessionId!, message),
+    mutationFn: ({ message, model }: { message: string; model: string }) =>
+      replyToSession(selectedSessionId!, message, { model }),
     onSuccess: (result) => {
       setSelectedSessionId(result.session.id);
       setDraft('');
@@ -475,14 +485,14 @@ function ChatTab({ project }: { project: Project }) {
   const submitReply = (event: FormEvent) => {
     event.preventDefault();
     if (!draft.trim() || !canReply) return;
-    replyMutation.mutate(draft.trim());
+    replyMutation.mutate({ message: draft.trim(), model: orchestratorModel });
   };
 
   const handleReplyKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (!draft.trim() || !canReply) return;
-      replyMutation.mutate(draft.trim());
+      replyMutation.mutate({ message: draft.trim(), model: orchestratorModel });
     }
   };
 
@@ -565,6 +575,35 @@ function ChatTab({ project }: { project: Project }) {
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col bg-base">
+        {/* Token budget bar — shown whenever a session is selected and has run data */}
+        {sessionQuery.data && sessionQuery.data.runs.length > 0 && (() => {
+          const runs = sessionQuery.data.runs;
+          const totals = runs.reduce(
+            (acc, r) => ({
+              input: acc.input + r.total_input_tokens,
+              output: acc.output + r.total_output_tokens,
+              cacheNew: acc.cacheNew + r.total_cache_creation_tokens,
+              cacheRead: acc.cacheRead + r.total_cache_read_tokens,
+            }),
+            { input: 0, output: 0, cacheNew: 0, cacheRead: 0 },
+          );
+          const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+          return (
+            <div className="grid shrink-0 grid-cols-4 gap-px border-b border-border bg-border">
+              {([
+                ['input', totals.input],
+                ['output', totals.output],
+                ['cache new', totals.cacheNew],
+                ['cache read', totals.cacheRead],
+              ] as [string, number][]).map(([label, value]) => (
+                <div key={label} className="bg-surface px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-widest text-text-muted">{label}</div>
+                  <div className="mt-0.5 text-xs text-text-primary">{fmt(value)}</div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
         <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {!selectedSessionId ? (
             <div className="text-xs text-text-muted">Select or start a session.</div>
@@ -631,19 +670,50 @@ function ChatTab({ project }: { project: Project }) {
           )}
         </div>
 
-        <form className="flex shrink-0 gap-2 border-t border-border bg-surface p-3" onSubmit={submitReply}>
-          <textarea
-            className="field min-h-12 resize-none"
-            placeholder={canReply ? 'Reply… (Enter to send, Shift+Enter for newline)' : 'Waiting for the current turn...'}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={handleReplyKeyDown}
-            disabled={!canReply || replyMutation.isPending}
-          />
-          <button className="icon-button h-12 w-12" title="Send reply" disabled={!canReply || replyMutation.isPending}>
-            {replyMutation.isPending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-          </button>
-        </form>
+        <div className="shrink-0 border-t border-border bg-surface">
+          {/* Model picker + cancel-and-switch row */}
+          <div className="flex items-center gap-2 border-b border-border/50 px-3 py-1.5">
+            <span className="shrink-0 text-[10px] uppercase tracking-widest text-text-muted">model</span>
+            <select
+              className="field h-6 min-w-0 flex-1 py-0 text-xs"
+              value={orchestratorModel}
+              onChange={(e) => updateModel(e.target.value)}
+            >
+              {availableModels.length === 0 ? (
+                <option value={orchestratorModel}>{orchestratorModel}</option>
+              ) : (
+                availableModels.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))
+              )}
+            </select>
+            {selectedSessionId && currentRun && isActive(currentRun.status) && (
+              <button
+                className="inline-flex shrink-0 items-center gap-1 rounded border border-red/40 bg-red/10 px-2 py-0.5 text-[10px] text-red transition-colors hover:bg-red/20 disabled:opacity-50"
+                title="Cancel the current run — your next reply will resume with the selected model"
+                disabled={cancelCurrentMutation.isPending}
+                onClick={() => cancelCurrentMutation.mutate()}
+              >
+                <Square size={9} />
+                cancel &amp; switch
+              </button>
+            )}
+          </div>
+          {/* Reply input */}
+          <form className="flex gap-2 p-3" onSubmit={submitReply}>
+            <textarea
+              className="field min-h-12 resize-none"
+              placeholder={canReply ? 'Reply… (Enter to send, Shift+Enter for newline)' : 'Waiting for the current turn...'}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={handleReplyKeyDown}
+              disabled={!canReply || replyMutation.isPending}
+            />
+            <button className="icon-button h-12 w-12" title="Send reply" disabled={!canReply || replyMutation.isPending}>
+              {replyMutation.isPending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   );
