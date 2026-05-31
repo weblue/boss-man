@@ -47,7 +47,7 @@ model_list:
   # ── Local model (optional — requires Ollama on host) ───────────────────────
   - model_name: local-worker
     litellm_params:
-      model: ollama_chat/qwen2.5-coder:32b
+      model: ollama_chat/hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
       api_base: http://host.docker.internal:11434
     model_info:
       supports_function_calling: true

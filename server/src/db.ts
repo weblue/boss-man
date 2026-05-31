@@ -74,6 +74,9 @@ if (!runColumns.some((column) => column.name === 'claude_auth_provider')) {
 if (!runColumns.some((column) => column.name === 'orchestrator_session_id')) {
   db.exec('ALTER TABLE runs ADD COLUMN orchestrator_session_id TEXT');
 }
+if (!runColumns.some((column) => column.name === 'changed_files')) {
+  db.exec('ALTER TABLE runs ADD COLUMN changed_files TEXT');
+}
 
 // ── Projects ─────────────────────────────────────────────────────────────────
 
@@ -128,6 +131,7 @@ export interface Run {
   last_session_id: string | null;
   langfuse_trace_id: string | null;
   beads_task_id: string | null;
+  changed_files: string | null;
 }
 
 const _insertRun = db.prepare(`
@@ -171,9 +175,14 @@ const _updateRun = db.prepare(`
     total_cache_creation_tokens = COALESCE(@total_cache_creation_tokens, total_cache_creation_tokens),
     total_cache_read_tokens = COALESCE(@total_cache_read_tokens, total_cache_read_tokens),
     last_session_id = COALESCE(@last_session_id, last_session_id),
-    langfuse_trace_id = COALESCE(@langfuse_trace_id, langfuse_trace_id)
+    langfuse_trace_id = COALESCE(@langfuse_trace_id, langfuse_trace_id),
+    changed_files = COALESCE(@changed_files, changed_files)
   WHERE id = @id
 `);
+// NOTE: COALESCE means passing null for error preserves the existing value.
+// Use clearRunError() when the error field must be explicitly cleared.
+const _clearRunError = db.prepare('UPDATE runs SET error = NULL WHERE id = ?');
+export function clearRunError(id: string) { _clearRunError.run(id); }
 export function updateRun(id: string, fields: Partial<Run>) {
   _updateRun.run({
     id,
@@ -187,6 +196,7 @@ export function updateRun(id: string, fields: Partial<Run>) {
     total_cache_read_tokens: null,
     last_session_id: null,
     langfuse_trace_id: null,
+    changed_files: null,
     ...fields,
   });
 }
@@ -214,16 +224,25 @@ export interface TerminalEvent {
   timestamp: string;
 }
 
+/** Row as stored in the DB — includes the autoincrement `id` used for stable event sequencing. */
+export interface StoredEvent extends TerminalEvent {
+  id: number;
+}
+
 const _insertEvent = db.prepare(`
   INSERT INTO terminal_events (run_id, type, data, timestamp)
   VALUES (@run_id, @type, @data, @timestamp)
 `);
-export function insertEvent(event: TerminalEvent) { _insertEvent.run(event); }
+/** Insert an event and return its autoincrement row id (used as the stable sequence number). */
+export function insertEvent(event: TerminalEvent): number {
+  const result = _insertEvent.run(event);
+  return Number(result.lastInsertRowid);
+}
 
-const _listEvents = db.prepare<[string], TerminalEvent>(
+const _listEvents = db.prepare<[string], StoredEvent>(
   'SELECT * FROM terminal_events WHERE run_id = ? ORDER BY id ASC'
 );
-export function listEvents(runId: string): TerminalEvent[] {
+export function listEvents(runId: string): StoredEvent[] {
   return _listEvents.all(runId);
 }
 
@@ -257,9 +276,27 @@ export function listSessions(projectId: string): OrchestratorSession[] { return 
 const _updateSession = db.prepare(`
   UPDATE orchestrator_sessions SET
     status = COALESCE(@status, status),
+    name = COALESCE(@name, name),
     current_run_id = COALESCE(@current_run_id, current_run_id)
   WHERE id = @id
 `);
 export function updateSession(id: string, fields: Partial<OrchestratorSession>) {
-  _updateSession.run({ id, status: null, current_run_id: null, ...fields });
+  _updateSession.run({ id, status: null, name: null, current_run_id: null, ...fields });
+}
+
+// Hoisted at module level so they're compiled once, not re-prepared on every delete call.
+const _deleteEventsForRun = db.prepare('DELETE FROM terminal_events WHERE run_id = ?');
+const _deleteRunsForSession = db.prepare('DELETE FROM runs WHERE orchestrator_session_id = ?');
+const _deleteSessionById = db.prepare('DELETE FROM orchestrator_sessions WHERE id = ?');
+
+const _deleteSessionTransaction = db.transaction((sessionId: string) => {
+  const sessionRuns = _listSessionRuns.all(sessionId);
+  for (const run of sessionRuns) {
+    _deleteEventsForRun.run(run.id);
+  }
+  _deleteRunsForSession.run(sessionId);
+  _deleteSessionById.run(sessionId);
+});
+export function deleteSession(id: string): void {
+  _deleteSessionTransaction(id);
 }

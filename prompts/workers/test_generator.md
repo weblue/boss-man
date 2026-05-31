@@ -28,6 +28,12 @@ Or for specific test files:
 npx getprismo shield -- npx jest path/to/test.spec.ts --no-coverage
 ```
 
+## Iteration discipline
+You run for at most 3 iterations. If you cannot produce confirmed-failing tests by the
+end of iteration 2 (e.g. the test framework is misconfigured or the acceptance criteria
+are ambiguous), **stop**. Commit whatever you have, explain the specific blocker, and
+emit `<task-complete/>`. Do not guess — the orchestrator will clarify.
+
 ## Completion signal
 When tests are committed and confirmed red, output exactly:
 `<task-complete/>`

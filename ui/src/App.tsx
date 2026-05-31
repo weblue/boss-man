@@ -6,6 +6,7 @@ import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github-dark.css';
 import {
   Bot,
+  ChevronDown,
   Clock3,
   FileText,
   FolderGit2,
@@ -23,6 +24,7 @@ import {
 import {
   cancelRun,
   createProject,
+  deleteSession,
   getProject,
   getRun,
   getRunEvents,
@@ -38,15 +40,12 @@ import {
   replyToSession,
   startSession,
 } from './api';
-import type { AgentEvent, BeadsTask, OrchestratorBackend, Project, Run, Session } from './types';
+import type { AgentEvent, BeadsTask, Project, Run, Session } from './types';
 
 const TERMINAL_STATUSES = new Set(['completed', 'complete', 'failed', 'cancelled']);
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
 const COLORS = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#a371f7', '#39c5cf', '#ff7b72'];
-const BACKEND_MODEL_DEFAULTS: Record<OrchestratorBackend, string> = {
-  anthropic: 'boss-man/high',
-  litellm: 'boss-man/high',
-};
+const DEFAULT_ORCHESTRATOR_MODEL = 'boss-man/high';
 
 function isTerminal(status?: string | null): boolean {
   return !!status && TERMINAL_STATUSES.has(status);
@@ -86,7 +85,15 @@ function classNames(...values: Array<string | false | null | undefined>): string
 }
 
 function eventKey(event: AgentEvent): string {
+  // Prefer the stable DB sequence number; fall back to content hash for events
+  // that predate the seq field or arrive from a server that doesn't emit it.
+  if (event.seq != null) return `seq:${event.seq}`;
   return `${event.timestamp}:${event.type}:${event.toolName ?? ''}:${event.text ?? ''}`;
+}
+
+function parseSpawnWorkerRole(text: string): string | null {
+  const m = text.match(/--role\s+(\S+)/);
+  return m ? m[1] : null;
 }
 
 function mergeEvents(persisted: AgentEvent[] = [], live: AgentEvent[] = []): AgentEvent[] {
@@ -359,14 +366,11 @@ function ChatTab({ project }: { project: Project }) {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [newSessionDraft, setNewSessionDraft] = useState('');
-  const [orchestratorBackend, setOrchestratorBackend] = useState<OrchestratorBackend>(() => {
-    const stored = window.localStorage.getItem('boss-man.orchestratorBackend');
-    return stored === 'litellm' ? 'litellm' : 'anthropic';
-  });
   const [orchestratorModel, setOrchestratorModel] = useState(() => {
-    return window.localStorage.getItem('boss-man.orchestratorModel') ?? BACKEND_MODEL_DEFAULTS.anthropic;
+    return window.localStorage.getItem('boss-man.orchestratorModel') ?? DEFAULT_ORCHESTRATOR_MODEL;
   });
   const [eventsByRun, setEventsByRun] = useState<Record<string, AgentEvent[]>>({});
+  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
   const modelsQuery = useQuery({
@@ -375,6 +379,9 @@ function ChatTab({ project }: { project: Project }) {
     staleTime: 60_000,
   });
   const availableModels = modelsQuery.data ?? [];
+  // Always show tier aliases at the top; deduplicate in case LiteLLM also returns them.
+  const TIER_MODELS = ['boss-man/high', 'boss-man/medium', 'boss-man/low'];
+  const allModels = [...TIER_MODELS, ...availableModels.filter(m => !TIER_MODELS.includes(m))];
 
   const sessionsQuery = useQuery({
     queryKey: ['sessions', project.id],
@@ -405,6 +412,21 @@ function ChatTab({ project }: { project: Project }) {
     enabled: !!selectedSessionId,
   });
 
+  const allRunsQuery = useQuery({
+    queryKey: ['runs', project.id],
+    queryFn: () => listRuns(project.id),
+    staleTime: 10_000,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (sessionId: string) => deleteSession(sessionId),
+    onSuccess: (_, sessionId) => {
+      if (selectedSessionId === sessionId) setSelectedSessionId(null);
+      queryClient.invalidateQueries({ queryKey: ['sessions', project.id] });
+      queryClient.invalidateQueries({ queryKey: ['runs', project.id] });
+    },
+  });
+
   useEventStream(streamPath, (event) => {
     if (!currentRunId) return;
     setEventsByRun((prev) => ({
@@ -424,7 +446,7 @@ function ChatTab({ project }: { project: Project }) {
   }, [currentRunId, eventsByRun, transcriptQuery.data]);
 
   const startMutation = useMutation({
-    mutationFn: (payload: { message: string; backend: OrchestratorBackend; model: string }) => startSession(project.id, payload),
+    mutationFn: (payload: { message: string; model: string }) => startSession(project.id, payload),
     onSuccess: (result) => {
       setSelectedSessionId(result.session.id);
       setNewSessionDraft('');
@@ -464,17 +486,8 @@ function ChatTab({ project }: { project: Project }) {
     if (!newSessionDraft.trim()) return;
     startMutation.mutate({
       message: newSessionDraft.trim(),
-      backend: orchestratorBackend,
-      model: orchestratorModel.trim() || BACKEND_MODEL_DEFAULTS[orchestratorBackend],
+      model: orchestratorModel.trim() || DEFAULT_ORCHESTRATOR_MODEL,
     });
-  };
-
-  const selectBackend = (backend: OrchestratorBackend) => {
-    setOrchestratorBackend(backend);
-    window.localStorage.setItem('boss-man.orchestratorBackend', backend);
-    const nextModel = BACKEND_MODEL_DEFAULTS[backend];
-    setOrchestratorModel(nextModel);
-    window.localStorage.setItem('boss-man.orchestratorModel', nextModel);
   };
 
   const updateModel = (model: string) => {
@@ -507,7 +520,7 @@ function ChatTab({ project }: { project: Project }) {
             <button
               key={session.id}
               className={classNames(
-                'w-full border-b border-border border-l-2 px-3 py-3 text-left transition-colors hover:bg-elevated/50',
+                'group w-full border-b border-border border-l-2 px-3 py-3 text-left transition-colors hover:bg-elevated/50',
                 selectedSessionId === session.id && 'bg-elevated',
               )}
               style={{ borderLeftColor: selectedSessionId === session.id ? accentFor(project.id) : 'transparent' }}
@@ -515,7 +528,21 @@ function ChatTab({ project }: { project: Project }) {
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="truncate text-xs font-semibold text-text-primary">{session.name ?? `Session ${session.id.slice(0, 8)}`}</span>
-                <StatusBadge status={session.status} />
+                <div className="flex shrink-0 items-center gap-1">
+                  <StatusBadge status={session.status} />
+                  <button
+                    className="ml-auto shrink-0 rounded p-0.5 text-text-muted opacity-0 transition-opacity hover:text-red group-hover:opacity-100"
+                    title="Delete session"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (window.confirm('Delete this session and all its runs? This cannot be undone.')) {
+                        deleteMutation.mutate(session.id);
+                      }
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
               </div>
               <div className="mt-1 text-xs text-text-muted">{formatDate(session.created_at)}</div>
             </button>
@@ -523,39 +550,15 @@ function ChatTab({ project }: { project: Project }) {
           {sessionsQuery.data?.length === 0 && <div className="px-3 py-4 text-xs text-text-muted">No sessions.</div>}
         </div>
         <form className="border-t border-border p-3" onSubmit={submitNewSession}>
-          <div className="mb-2 grid grid-cols-2 gap-px overflow-hidden rounded border border-border bg-border">
-            {([
-              ['anthropic', 'Anthropic'],
-              ['litellm', 'LiteLLM'],
-            ] as const).map(([backend, label]) => (
-              <button
-                key={backend}
-                type="button"
-                className={classNames(
-                  'h-8 bg-base px-2 text-xs transition-colors hover:text-text-primary disabled:opacity-50',
-                  orchestratorBackend === backend ? 'text-blue' : 'text-text-muted',
-                )}
-                title={backend === 'anthropic' ? 'Claude Code using CLAUDE_CODE_OAUTH_TOKEN' : 'Claude Code using LiteLLM Anthropic-compatible routing'}
-                disabled={startMutation.isPending}
-                onClick={() => selectBackend(backend)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
           <select
             className="field mb-2"
             value={orchestratorModel}
             disabled={startMutation.isPending}
             onChange={(e) => updateModel(e.target.value)}
           >
-            {availableModels.length === 0 ? (
-              <option value={orchestratorModel}>{orchestratorModel}</option>
-            ) : (
-              availableModels.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))
-            )}
+            {allModels.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
           </select>
           <textarea
             className="field min-h-24 resize-none"
@@ -649,10 +652,61 @@ function ChatTab({ project }: { project: Project }) {
                         {toolEvents.length > 0 && (
                           <div className="mt-3 border-t border-border pt-3">
                             {toolEvents.slice(-6).map((event, index) => (
-                              <div key={`${event.timestamp}-${index}`} className="truncate text-xs text-text-muted">
-                                $ {event.toolName}: {event.text}
+                              <div key={`${event.timestamp}-${index}`}>
+                                <button
+                                  className="flex w-full items-start gap-1.5 text-left text-xs text-text-muted hover:text-text-primary"
+                                  onClick={() => setExpandedTools(prev => {
+                                    const next = new Set(prev);
+                                    const k = eventKey(event);
+                                    next.has(k) ? next.delete(k) : next.add(k);
+                                    return next;
+                                  })}
+                                >
+                                  <span className="mt-0.5 shrink-0 font-mono text-blue">$</span>
+                                  <span className="flex-1 truncate font-mono">{event.toolName}</span>
+                                  <ChevronDown size={11} className={classNames('mt-0.5 shrink-0 transition-transform', expandedTools.has(eventKey(event)) && 'rotate-180')} />
+                                </button>
+                                {expandedTools.has(eventKey(event)) && event.text && (
+                                  <pre className="mt-1 overflow-x-auto rounded bg-base px-2 py-1 text-[10px] leading-4 text-text-muted">
+                                    {event.text}
+                                  </pre>
+                                )}
                               </div>
                             ))}
+                            {(() => {
+                              const allRuns = allRunsQuery.data ?? [];
+                              const spawnEvents = toolEvents.filter(
+                                (event) => event.toolName === 'Bash' && event.text?.includes('spawn-worker'),
+                              );
+                              const workerRuns = spawnEvents.flatMap((event) => {
+                                const role = parseSpawnWorkerRole(event.text ?? '');
+                                if (!role) return [];
+                                const eventTime = Date.parse(event.timestamp);
+                                return allRuns.filter(
+                                  (wr) =>
+                                    wr.project_id === project.id &&
+                                    wr.role === role &&
+                                    wr.orchestrator_session_id === null &&
+                                    wr.created_at >= eventTime - 10_000,
+                                );
+                              });
+                              if (workerRuns.length === 0) return null;
+                              return (
+                                <div className="mt-3 flex flex-wrap gap-2 border-t border-border pt-3">
+                                  {workerRuns.map((wr) => (
+                                    <Link
+                                      key={wr.id}
+                                      to={`/projects/${project.id}/runs?run=${wr.id}`}
+                                      className="inline-flex items-center gap-1.5 rounded border border-border bg-elevated px-2 py-1 text-xs text-text-muted transition-colors hover:text-text-primary"
+                                    >
+                                      <Terminal size={11} />
+                                      <span>{wr.role}</span>
+                                      <StatusBadge status={wr.status} />
+                                    </Link>
+                                  ))}
+                                </div>
+                              );
+                            })()}
                           </div>
                         )}
                         {running && <ThinkingIndicator />}
@@ -679,13 +733,9 @@ function ChatTab({ project }: { project: Project }) {
               value={orchestratorModel}
               onChange={(e) => updateModel(e.target.value)}
             >
-              {availableModels.length === 0 ? (
-                <option value={orchestratorModel}>{orchestratorModel}</option>
-              ) : (
-                availableModels.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))
-              )}
+              {allModels.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
             </select>
             {selectedSessionId && currentRun && isActive(currentRun.status) && (
               <button
@@ -817,6 +867,8 @@ function RunsTab({ project }: { project: Project }) {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(() => requestedRunId);
   const [selectedOrcSessionId, setSelectedOrcSessionId] = useState<string | null>(null);
   const [eventsByRun, setEventsByRun] = useState<Record<string, AgentEvent[]>>({});
+  const [showDebug, setShowDebug] = useState(false);
+  const [expandedRunTools, setExpandedRunTools] = useState<Set<string>>(new Set());
 
   const runsQuery = useQuery({
     queryKey: ['runs', project.id],
@@ -1080,16 +1132,37 @@ function RunsTab({ project }: { project: Project }) {
               </div>
               <StatusBadge status={selectedRun.status} />
               {isActive(selectedRun.status) && (
-                <button
-                  className="icon-button"
-                  title="Cancel run"
-                  disabled={stopMutation.isPending}
-                  onClick={() => stopMutation.mutate(selectedRun.id)}
-                >
-                  <Square size={14} />
-                </button>
+                <>
+                  <button
+                    className="icon-button"
+                    title="Show debug command"
+                    onClick={() => setShowDebug(v => !v)}
+                  >
+                    <Terminal size={14} />
+                  </button>
+                  <button
+                    className="icon-button"
+                    title="Cancel run"
+                    disabled={stopMutation.isPending}
+                    onClick={() => stopMutation.mutate(selectedRun.id)}
+                  >
+                    <Square size={14} />
+                  </button>
+                </>
               )}
             </div>
+            {showDebug && isActive(selectedRun.status) && (
+              <div className="shrink-0 border-b border-border bg-elevated/50 px-4 py-3 text-xs">
+                <div className="mb-1 text-text-muted">List sandbox containers:</div>
+                <code className="block select-all rounded bg-base px-2 py-1 text-text-primary">
+                  {'docker ps --filter "ancestor=boss-man:sandbox" --format "table {{.ID}}\\t{{.Names}}\\t{{.Status}}"'}
+                </code>
+                <div className="mt-2 text-text-muted">Then attach:</div>
+                <code className="block select-all rounded bg-base px-2 py-1 text-text-primary">
+                  docker exec -it &lt;container_id&gt; bash
+                </code>
+              </div>
+            )}
             <div className="grid shrink-0 grid-cols-4 gap-px border-b border-border bg-border">
               {[
                 ['input', selectedRun.total_input_tokens],
@@ -1103,16 +1176,67 @@ function RunsTab({ project }: { project: Project }) {
                 </div>
               ))}
             </div>
-            <pre className="min-h-0 flex-1 overflow-auto bg-base p-4 text-xs leading-5 text-text-primary">
+            <div className="min-h-0 flex-1 overflow-auto bg-base p-4 text-xs leading-5 text-text-primary">
               {logEvents.length > 0
-                ? logEvents
-                    .map((event) => {
-                      const prefix = event.type === 'toolCall' ? `$ ${event.toolName}` : event.type;
-                      return `[${formatDate(Date.parse(event.timestamp))}] ${prefix}: ${event.text ?? ''}`;
-                    })
-                    .join('\n')
-                : selectedRun.error ?? 'No live events captured for this run.'}
-            </pre>
+                ? logEvents.map((event) => {
+                    const k = eventKey(event);
+                    if (event.type === 'toolCall') {
+                      return (
+                        <div key={k} className="mb-1">
+                          <button
+                            className="flex w-full items-start gap-1.5 text-left text-xs text-text-muted hover:text-text-primary"
+                            onClick={() => setExpandedRunTools(prev => {
+                              const next = new Set(prev);
+                              next.has(k) ? next.delete(k) : next.add(k);
+                              return next;
+                            })}
+                          >
+                            <span className="mt-0.5 shrink-0 font-mono text-blue">$</span>
+                            <span className="flex-1 truncate font-mono">{event.toolName}</span>
+                            <ChevronDown size={11} className={classNames('mt-0.5 shrink-0 transition-transform', expandedRunTools.has(k) && 'rotate-180')} />
+                          </button>
+                          {expandedRunTools.has(k) && event.text && (
+                            <pre className="mt-1 overflow-x-auto rounded bg-elevated px-2 py-1 text-[10px] leading-4 text-text-muted">
+                              {event.text}
+                            </pre>
+                          )}
+                        </div>
+                      );
+                    }
+                    const prefix = event.type;
+                    return (
+                      <div key={k} className="mb-0.5 text-text-muted">
+                        [{formatDate(Date.parse(event.timestamp))}] {prefix}: {event.text ?? ''}
+                      </div>
+                    );
+                  })
+                : <div className="text-text-muted">{selectedRun.error ?? 'No live events captured for this run.'}</div>}
+            </div>
+            {selectedRun.changed_files && (() => {
+              let files: string[];
+              try {
+                files = JSON.parse(selectedRun.changed_files) as string[];
+              } catch {
+                return null;
+              }
+              if (!Array.isArray(files)) return null;
+              if (files.length === 0) return null;
+              return (
+                <div className="shrink-0 border-t border-border">
+                  <div className="border-b border-border bg-elevated/30 px-4 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-text-muted">
+                    Changed files ({files.length})
+                  </div>
+                  <div className="max-h-40 overflow-y-auto">
+                    {files.map((f) => (
+                      <div key={f} className="flex items-center gap-2 border-b border-border/50 px-4 py-1.5 text-xs text-text-muted">
+                        <FileText size={11} className="shrink-0" />
+                        <span className="min-w-0 flex-1 truncate font-mono">{f}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
           </>
         ) : (
           <div className="flex flex-1 items-center justify-center text-xs text-text-muted">Select a run.</div>

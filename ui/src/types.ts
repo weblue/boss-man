@@ -32,6 +32,7 @@ export interface Run {
   last_session_id: string | null;
   langfuse_trace_id: string | null;
   beads_task_id: string | null;
+  changed_files: string | null;
 }
 
 export interface Session {
@@ -49,6 +50,9 @@ export interface SessionDetail extends Session {
 }
 
 export interface AgentEvent {
+  /** Stable autoincrement DB row id. Present on persisted events and live events after the server embeds it.
+   *  Used for deduplication when persisted replay and live stream overlap. */
+  seq?: number;
   type: 'text' | 'toolCall' | 'toolResult' | 'iteration' | 'usage' | 'error' | 'done';
   text?: string;
   toolName?: string;
@@ -64,8 +68,6 @@ export interface SpecFile {
 }
 
 export type BeadsTask = Record<string, unknown>;
-
-export type OrchestratorBackend = 'anthropic' | 'litellm';
 
 export interface TranscriptEntry {
   run: Run;

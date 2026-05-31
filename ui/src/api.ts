@@ -1,7 +1,6 @@
 import type {
   AgentEvent,
   BeadsTask,
-  OrchestratorBackend,
   Project,
   Run,
   Session,
@@ -71,8 +70,8 @@ export async function getSessionTranscript(id: string): Promise<TranscriptEntry[
 
 export async function startSession(projectId: string, payload: {
   message: string;
-  backend: OrchestratorBackend;
-  model: string;
+  model?: string;
+  name?: string;
 }): Promise<{
   session: Session;
   run: Run;
@@ -83,9 +82,10 @@ export async function startSession(projectId: string, payload: {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: payload.message,
-        agentProvider: 'claude-code',
-        claudeAuthProvider: payload.backend,
         model: payload.model,
+        name: payload.name,
+        // agentProvider and claudeAuthProvider are determined by the server
+        // based on the model profile selected at boot time (start.sh).
       }),
     }),
   );
@@ -123,6 +123,12 @@ export async function getRunEvents(runId: string): Promise<AgentEvent[]> {
 export async function cancelRun(runId: string): Promise<{ cancelled: boolean }> {
   return json<{ cancelled: boolean }>(
     await fetch(`/api/runs/${encodeURIComponent(runId)}`, { method: 'DELETE' }),
+  );
+}
+
+export async function deleteSession(sessionId: string): Promise<{ deleted: boolean }> {
+  return json<{ deleted: boolean }>(
+    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
   );
 }
 
