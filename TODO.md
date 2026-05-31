@@ -115,7 +115,7 @@ Goal: the web UI should expose the full useful experience of a Docker-contained 
 - [x] `Makefile` target: `make sandbox` — builds with `--build-arg BEADS_VERSION`; `make sandbox-push` for registry push. `make help` lists all targets.
 - [x] Add `install.sh` step to build sandbox image on first run — `install.sh` step 6 runs `docker build --build-arg BEADS_VERSION=...`; `BEADS_VERSION` and `SANDBOX_IMAGE` can be overridden via env.
 - [x] Document BEADS_VERSION arg in Dockerfile — `Makefile` shows `make sandbox BEADS_VERSION=X.Y.Z`; `BEADS_VERSION` env is also honoured in `install.sh` and `.github/workflows/sandbox.yml`.
-- [x] GitHub Actions: build + push sandbox image on Dockerfile changes — `.github/workflows/sandbox.yml` triggers on `sandcastle/Dockerfile` or `scripts/spawn-worker` changes; builds on PRs (verification), pushes to `ghcr.io/<owner>/boss-man-sandbox` on merge to main; uses registry build cache.
+- [ ] ~~GitHub Actions: build + push sandbox image on Dockerfile changes~~ — dropped; not needed for a private project where everyone builds locally via `./install.sh` or `make sandbox`.
 
 ---
 
