@@ -13,7 +13,8 @@ import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { updateRun } from './db.js';
 import { pushEvent, cleanupRunStream } from './streaming.js';
 import {
@@ -29,6 +30,8 @@ import {
   resolveClaudeCodeModel,
   resolveTier,
 } from './config.js';
+
+const execFileAsync = promisify(execFile);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', '..', 'data');
@@ -159,25 +162,30 @@ function sumUsage(iterations: readonly { usage?: IterationUsage }[]) {
   );
 }
 
-export function ensureRepoHasHead(repoPath: string): void {
+/** Ensure the repo has at least one commit (HEAD must exist for Sandcastle's branchStrategy).
+ *  Fresh dashboard-created projects start as empty git repos, so we create a baseline commit.
+ *  Async so it doesn't block the Node event loop. */
+export async function ensureRepoHasHead(repoPath: string): Promise<void> {
   try {
-    execFileSync('git', ['-C', repoPath, 'rev-parse', '--verify', 'HEAD'], { stdio: 'ignore' });
+    await execFileAsync('git', ['-C', repoPath, 'rev-parse', '--verify', 'HEAD']);
     return;
   } catch {
-    // Sandcastle branchStrategy needs HEAD. Fresh dashboard-created projects
-    // start as empty git repos, so create a harmless baseline commit.
+    // HEAD doesn't exist — fall through to create the initial commit.
   }
 
-  execFileSync('git', ['-C', repoPath, 'commit', '--allow-empty', '-m', 'chore: initial project commit'], {
-    stdio: 'ignore',
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? 'Boss Man',
-      GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL ?? 'boss-man@localhost',
-      GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME ?? 'Boss Man',
-      GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL ?? 'boss-man@localhost',
+  await execFileAsync(
+    'git',
+    ['-C', repoPath, 'commit', '--allow-empty', '-m', 'chore: initial project commit'],
+    {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? 'Boss Man',
+        GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL ?? 'boss-man@localhost',
+        GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME ?? 'Boss Man',
+        GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL ?? 'boss-man@localhost',
+      },
     },
-  });
+  );
 }
 
 function runFailureMessage(message: string): string {
@@ -207,7 +215,7 @@ export async function startRun(options: StartRunOptions): Promise<void> {
   const fullPrompt = buildPrompt(options.prompt, options.role);
 
   try {
-    ensureRepoHasHead(options.repoPath);
+    await ensureRepoHasHead(options.repoPath);
 
     const result = await sandcastleRun({
       agent: getAgentProvider(
@@ -229,6 +237,17 @@ export async function startRun(options: StartRunOptions): Promise<void> {
       resumeSession: options.resumeSessionId,
       signal: abortController.signal,
       completionSignal: '<task-complete/>',
+      hooks: {
+        sandbox: {
+          onSandboxReady: [
+            // Run prismo doctor before the agent starts to generate .claudeignore and
+            // context summary files. This prevents agents from indexing node_modules,
+            // dist/, .git, and other large irrelevant directories, saving significant
+            // tokens on every run without any LLM cost.
+            { command: 'npx getprismo doctor --quiet 2>/dev/null || true', timeoutMs: 30_000 },
+          ],
+        },
+      },
       logging: {
         type: 'file',
         path: join(LOGS_DIR, `${options.id}.log`),
@@ -246,6 +265,31 @@ export async function startRun(options: StartRunOptions): Promise<void> {
     const usage = sumUsage(result.iterations);
     const lastSession = result.iterations.at(-1)?.sessionId ?? null;
 
+    let changedFiles: string[] = [];
+    if (result.commits.length > 0) {
+      try {
+        const firstSha = result.commits[0].sha;
+        const lastSha = result.commits.at(-1)!.sha;
+        const raw = execFileSync(
+          'git',
+          ['-C', options.repoPath, 'diff', '--name-only', `${firstSha}^`, lastSha],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+        );
+        changedFiles = raw.split('\n').filter(Boolean);
+      } catch {
+        // git diff failed (e.g. first commit with no parent) — try alternate form
+        try {
+          const lastSha = result.commits.at(-1)!.sha;
+          const raw = execFileSync(
+            'git',
+            ['-C', options.repoPath, 'diff-tree', '--no-commit-id', '-r', '--name-only', lastSha],
+            { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+          );
+          changedFiles = raw.split('\n').filter(Boolean);
+        } catch { /* leave empty */ }
+      }
+    }
+
     updateRun(options.id, {
       status: 'completed',
       completed_at: Date.now(),
@@ -254,6 +298,7 @@ export async function startRun(options: StartRunOptions): Promise<void> {
       total_cache_creation_tokens: usage.cacheCreationTokens,
       total_cache_read_tokens: usage.cacheReadTokens,
       last_session_id: lastSession,
+      changed_files: changedFiles.length > 0 ? JSON.stringify(changedFiles) : null,
     });
 
     pushEvent(options.id, { type: 'done', timestamp: new Date().toISOString() });

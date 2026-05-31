@@ -155,7 +155,11 @@ echo ""
 echo "── Building sandbox Docker image (boss-man:sandbox) ──"
 echo "   This installs Claude Code, prismo, and bd in the agent sandbox."
 
-docker build -t "${SANDBOX_IMAGE:-boss-man:sandbox}" -f sandcastle/Dockerfile .
+docker build \
+  --build-arg "BEADS_VERSION=${BEADS_VERSION:-1.0.4}" \
+  -t "${SANDBOX_IMAGE:-boss-man:sandbox}" \
+  -f sandcastle/Dockerfile \
+  .
 ok "boss-man:sandbox image built"
 
 echo "── Verifying sandbox Docker image ──"

@@ -14,6 +14,9 @@ const VALID_ROLES = new Set([
 
 const VALID_PROVIDERS = new Set(['claude-code', 'codex', 'opencode']);
 
+/** Run statuses that will never emit another event — used to close SSE streams immediately. */
+const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
 router.get('/api/projects/:projectId/runs', (c) => {
   return c.json(listRuns(c.req.param('projectId')));
 });
@@ -89,6 +92,7 @@ router.post('/api/runs', async (c) => {
     last_session_id: null,
     langfuse_trace_id: null,
     beads_task_id: beadsTaskId ?? null,
+    changed_files: null,
   });
 
   // Start async — don't await
@@ -114,7 +118,10 @@ router.post('/api/runs', async (c) => {
 });
 
 router.delete('/api/runs/:id', (c) => {
-  const cancelled = cancelRun(c.req.param('id'));
+  const runId = c.req.param('id');
+  const run = getRun(runId);
+  if (!run) return c.json({ error: 'Not found' }, 404);
+  const cancelled = cancelRun(runId);
   return c.json({ cancelled });
 });
 
@@ -128,15 +135,68 @@ router.get('/api/runs/:id/events', (c) => {
     new ReadableStream({
       start(controller) {
         const enc = new TextEncoder();
-        const send = (event: AgentEvent) => {
-          controller.enqueue(enc.encode(`data: ${JSON.stringify(event)}\n\n`));
-          if (event.type === 'done' || event.type === 'error') controller.close();
+        let closed = false;
+        let unsub: (() => void) | undefined;
+        let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+
+        const close = () => {
+          if (closed) return;
+          closed = true;
+          clearInterval(heartbeatTimer);
+          unsub?.();
+          try { controller.close(); } catch { /* already closed */ }
         };
-        const unsub = subscribe(runId, send);
-        c.req.raw.signal.addEventListener('abort', () => {
-          unsub();
-          controller.close();
-        });
+
+        const send = (event: AgentEvent) => {
+          if (closed) return;
+          try {
+            controller.enqueue(enc.encode(`data: ${JSON.stringify(event)}\n\n`));
+          } catch {
+            close();
+            return;
+          }
+          if (event.type === 'done' || event.type === 'error') close();
+        };
+
+        // Subscribe BEFORE replaying persisted events to avoid a race where a live
+        // event arrives between getPersistedEvents() and subscribe(). The client
+        // deduplicates overlapping events by seq, so the overlap is harmless.
+        unsub = subscribe(runId, send);
+
+        // Replay all persisted events so late-joining clients see the full history.
+        for (const event of getPersistedEvents(runId)) {
+          send(event);
+          if (closed) return;
+        }
+
+        // If the run is already in a terminal state but no done/error event was
+        // persisted (e.g. cancelled runs, or runs interrupted by a server restart),
+        // inject a synthetic terminal event and close the stream.
+        if (!closed) {
+          const currentRun = getRun(runId);
+          if (currentRun && TERMINAL_RUN_STATUSES.has(currentRun.status)) {
+            const termType = currentRun.status === 'failed' ? 'error' : 'done';
+            send({
+              type: termType,
+              text: currentRun.error ?? undefined,
+              timestamp: new Date().toISOString(),
+            });
+            return;
+          }
+        }
+
+        // Heartbeat every 15 s to keep the connection alive through proxies and
+        // load balancers that close idle SSE connections.
+        heartbeatTimer = setInterval(() => {
+          if (closed) return;
+          try {
+            controller.enqueue(enc.encode(': heartbeat\n\n'));
+          } catch {
+            close();
+          }
+        }, 15_000);
+
+        c.req.raw.signal.addEventListener('abort', close);
       },
     }),
     {
