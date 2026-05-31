@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
-import { insertProject, listProjects, getProject } from '../db.js';
+import { insertProject, listProjects, getProject, deleteProject, listRuns } from '../db.js';
 import { PROJECTS_DIR } from '../config.js';
 import { execFileSync } from 'node:child_process';
 import { ensureRepoHasHead } from '../runner.js';
@@ -54,6 +54,24 @@ router.post('/api/projects', async (c) => {
   });
 
   return c.json(getProject(id), 201);
+});
+
+router.delete('/api/projects/:id', (c) => {
+  const project = getProject(c.req.param('id'));
+  if (!project) return c.json({ error: 'Not found' }, 404);
+
+  const activeRun = listRuns(project.id).find(
+    (r) => r.status === 'queued' || r.status === 'running',
+  );
+  if (activeRun) {
+    return c.json(
+      { error: 'Cannot delete project with active runs. Cancel them first.' },
+      409,
+    );
+  }
+
+  deleteProject(project.id);
+  return c.json({ deleted: true });
 });
 
 export default router;

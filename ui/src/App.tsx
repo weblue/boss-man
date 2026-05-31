@@ -19,11 +19,13 @@ import {
   Send,
   Square,
   Terminal,
+  Trash2,
   X,
 } from 'lucide-react';
 import {
   cancelRun,
   createProject,
+  deleteProject,
   deleteSession,
   getProject,
   getRun,
@@ -176,6 +178,14 @@ function Sidebar({ projects }: { projects: Project[] }) {
     },
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (projectId: string) => deleteProject(projectId),
+    onSuccess: (_, projectId) => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      if (window.location.pathname.includes(projectId)) navigate('/');
+    },
+  });
+
   const filteredProjects = projects.filter((project) => {
     const value = `${project.name} ${project.description ?? ''} ${project.repo_path}`.toLowerCase();
     return value.includes(query.trim().toLowerCase());
@@ -259,7 +269,7 @@ function Sidebar({ projects }: { projects: Project[] }) {
               to={`/projects/${project.id}/chat`}
               className={({ isActive }) =>
                 classNames(
-                  'block border-b border-border border-l-2 px-3 py-3 transition-colors hover:bg-elevated/50',
+                  'group block border-b border-border border-l-2 px-3 py-3 transition-colors hover:bg-elevated/50',
                   isActive ? 'bg-elevated' : 'border-l-transparent',
                 )
               }
@@ -270,6 +280,19 @@ function Sidebar({ projects }: { projects: Project[] }) {
               <div className="flex items-center gap-2">
                 <FolderGit2 size={15} className="shrink-0 text-text-muted" />
                 <span className="min-w-0 flex-1 truncate text-xs font-semibold text-text-primary">{project.name}</span>
+                <button
+                  className="icon-button h-6 w-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+                  title="Delete project"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (window.confirm(`Delete "${project.name}" and all its sessions, runs, and events? The repo on disk is kept. This cannot be undone.`)) {
+                      deleteMutation.mutate(project.id);
+                    }
+                  }}
+                >
+                  <Trash2 size={12} />
+                </button>
               </div>
               <div className="mt-1 truncate text-xs text-text-muted">{project.description ?? project.repo_path}</div>
             </NavLink>

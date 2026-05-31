@@ -132,6 +132,12 @@ export async function deleteSession(sessionId: string): Promise<{ deleted: boole
   );
 }
 
+export async function deleteProject(projectId: string): Promise<{ deleted: boolean }> {
+  return json<{ deleted: boolean }>(
+    await fetch(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
+  );
+}
+
 export async function listTasks(): Promise<BeadsTask[] | string> {
   const res = await fetch('/api/beads/tasks');
   if (!res.ok) throw new Error(`${res.status}: ${await parseError(res)}`);

@@ -83,7 +83,7 @@ Build the React frontend in `ui/` workspace. Uncomment the `npm run dev --worksp
 
 Goal: the web UI should expose the full useful experience of a Docker-contained Claude Code agent without making tmux/container terminal state the source of truth. The core contract is an append-only structured event stream: containers execute the agent and emit events, the API persists and broadcasts those events, SQLite provides short-term replay, and tmux/docker exec remains a debug escape hatch.
 
-- [ ] **Event stream contract**: define the canonical run/session event stream shape shared by Docker agents, the Hono API, SQLite persistence, SSE replay, and React rendering. Every user-visible agent action should be represented as an append-only event with stable IDs, timestamps, run/session IDs, type, payload, and optional parent event ID.
+- ~~**Event stream contract**~~ — dropped; the stream already works in practice (seq, replay, heartbeat, dedup). Writing a formal spec for a project you own adds no value.
 - [ ] **Structured agent event model**: expand persisted/SSE events beyond text and tool-call starts to include `assistant_text_delta`, `tool_call_started`, `tool_stdout`, `tool_stderr`, `tool_result`, `file_changed`, `diff_available`, `approval_requested`, `run_status_changed`, `error`, and `done`. *(blocked: Sandcastle only emits `text` and `toolCall` events)*
 - [x] **Tool activity UI**: render expandable tool-call rows in Chat and Runs with command and args; click to expand full text.
 - [x] **Diff/file-change surfacing**: detect changed files after each run via `git diff --name-only`; store in `runs.changed_files`; render file list in run detail panel.
@@ -103,9 +103,10 @@ Goal: the web UI should expose the full useful experience of a Docker-contained 
 - [x] **`BOSS_MAN_SESSION_ID`** injected into sandbox env for all orchestrator runs (first turn and replies)
 - [x] **Token budget display**: cumulative input/output/cache tokens shown per session in the chat view (computed from runs already in `sessionQuery.data`)
 - [x] **prismo doctor on session start**: already present in orchestrator startup section (step 4)
-- [ ] **Orchestrator tool restrictions** *(blocked)*: `ClaudeCodeOptions` in Sandcastle SDK does not expose `--allowedTools`; needs upstream support or a workaround. Prompt-level enforcement is the current mitigation.
+- ~~**Orchestrator tool restrictions**~~ — moved to Phase 8 (SDK-blocked).
 - [ ] **Langfuse trace linking**: capture `x-langfuse-trace-id` response header from LiteLLM and store in `runs.langfuse_trace_id`. Surface in UI run detail. Complex — traces are created inside the sandbox by Claude Code's LiteLLM calls; no direct header access from the runner.
-- [ ] **bd CLI verification**: operational task — confirm `bd config set store.host host.docker.internal` works inside sandbox; no code change needed, just a test run.
+- ~~**Orchestrator tool restrictions**~~ — `ClaudeCodeOptions` does not expose `--allowedTools`; prompt-level enforcement is the current mitigation. Tracked in Phase 8.
+- ~~**bd CLI verification**~~ — removed; this is a one-time manual test, not a persistent TODO item.
 
 ---
 
@@ -124,7 +125,7 @@ Goal: the web UI should expose the full useful experience of a Docker-contained 
 - [ ] Per-project Beads database (`beads_db` field already in projects table; wire `bd --database` flag)
 - [ ] `GET /api/beads/tasks?db=projectName` — scoped task list per project
 - [ ] Session auth (simple API key gate on all `/api/*` routes) for network exposure
-- [ ] Project archiving / deletion
+- [x] **Project deletion**: `DELETE /api/projects/:id` cascade-deletes all sessions, runs, and events (repo on disk is preserved); blocked by active runs (409); trash icon on sidebar project items (hover-reveal, confirm dialog, navigates away if active project).
 - [ ] **CORS** — restrict `Access-Control-Allow-Origin` to localhost origins only (security hardening; low priority for trusted-network deployments but required before any network exposure)
 
 ---
@@ -180,6 +181,14 @@ Neither exists today. The checkpoint write buys time but doesn't eliminate the g
 **Impact:** All worker templates concatenate role boilerplate (~750–1,200 bytes of static instructions) with the variable task description in a single user message. The static portion cannot cache as a stable prefix.
 
 **Blocked on:** Same `ClaudeCodeOptions.systemPrompt` gap as #3. No workaround until the SDK exposes it.
+
+---
+
+#### [BLOCKED: SDK] #5 — Orchestrator tool restrictions
+
+**Impact:** The orchestrator can call any tool, including ones it should never touch (file edits outside `.spec/`, running builds directly). Prompt-level enforcement is the current mitigation but is not enforced.
+
+**Fix needed in SDK:** `ClaudeCodeOptions` needs to expose `--allowedTools` / `--disallowedTools` so the server can restrict the orchestrator to `Bash`, `Read`, and specific write paths at launch time.
 
 ---
 

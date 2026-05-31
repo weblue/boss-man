@@ -300,3 +300,22 @@ const _deleteSessionTransaction = db.transaction((sessionId: string) => {
 export function deleteSession(id: string): void {
   _deleteSessionTransaction(id);
 }
+
+// ── Project deletion ───────────────────────────────────────────────────────────
+
+const _deleteEventsByProject = db.prepare(
+  'DELETE FROM terminal_events WHERE run_id IN (SELECT id FROM runs WHERE project_id = ?)',
+);
+const _deleteRunsByProject = db.prepare('DELETE FROM runs WHERE project_id = ?');
+const _deleteSessionsByProject = db.prepare('DELETE FROM orchestrator_sessions WHERE project_id = ?');
+const _deleteProjectById = db.prepare('DELETE FROM projects WHERE id = ?');
+
+const _deleteProjectTransaction = db.transaction((projectId: string) => {
+  _deleteEventsByProject.run(projectId);
+  _deleteRunsByProject.run(projectId);
+  _deleteSessionsByProject.run(projectId);
+  _deleteProjectById.run(projectId);
+});
+export function deleteProject(id: string): void {
+  _deleteProjectTransaction(id);
+}
