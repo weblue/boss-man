@@ -9,6 +9,7 @@ import beadsRouter from './routes/beads.js';
 import specsRouter from './routes/specs.js';
 import sessionsRouter from './routes/sessions.js';
 import modelsRouter from './routes/models.js';
+import mcpRouter from './routes/mcp.js';
 import { markInterruptedRuns } from './db.js';
 
 const app = new Hono();
@@ -26,6 +27,7 @@ app.route('/', beadsRouter);
 app.route('/', specsRouter);
 app.route('/', sessionsRouter);
 app.route('/', modelsRouter);
+app.route('/', mcpRouter);
 
 serve({ fetch: app.fetch, port: SERVER_PORT }, () => {
   console.log(`boss-man server listening on http://localhost:${SERVER_PORT}`);

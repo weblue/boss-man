@@ -244,6 +244,33 @@ export async function startRun(options: StartRunOptions): Promise<void> {
   const resolvedModel = resolveTier(options.model) || defaultModelForRole(options.role);
   const fullPrompt = buildPrompt(options.prompt, options.role);
 
+  // Build the MCP URL. Both parts are known at Node.js level:
+  //   - base URL comes from CONTAINER_ENV (the value already injected into containers)
+  //   - sessionId is the orchestrator session for this run (empty for worker runs, which
+  //     still get the beads tools but don't need session_set_status / session_compact)
+  const sessionId = options.orchestratorSessionId ?? '';
+  const mcpUrl = `${CONTAINER_ENV.BOSS_MAN_API_URL}/mcp?sessionId=${sessionId}`;
+
+  // Build the agent-type-specific hook command that writes the MCP config file inside
+  // the container workspace. Using printf with a format string sidesteps any quoting
+  // issues with JSON content (no shell variable expansion needed — all values are baked in).
+  function buildMcpHookCommand(provider: string): string {
+    if (provider === 'codex') {
+      // TOML has no quoting issues for simple strings
+      const toml = `[mcp_servers.boss-man]\nurl = "${mcpUrl}"`;
+      return `mkdir -p /workspace/.codex && printf '%s' ${JSON.stringify(toml)} > /workspace/.codex/config.toml`;
+    }
+    if (provider === 'opencode') {
+      const json = JSON.stringify({ mcp: { 'boss-man': { type: 'remote', url: mcpUrl } } });
+      return `mkdir -p /workspace && printf '%s' ${JSON.stringify(json)} > /workspace/opencode.json`;
+    }
+    // Default: claude-code — .mcp.json in workspace root
+    const json = JSON.stringify({ mcpServers: { 'boss-man': { url: mcpUrl } } });
+    return `mkdir -p /workspace && printf '%s' ${JSON.stringify(json)} > /workspace/.mcp.json`;
+  }
+
+  const mcpHookCommand = buildMcpHookCommand(options.agentProvider ?? 'claude-code');
+
   try {
     await ensureRepoHasHead(options.repoPath);
 
@@ -275,6 +302,10 @@ export async function startRun(options: StartRunOptions): Promise<void> {
             // dist/, .git, and other large irrelevant directories, saving significant
             // tokens on every run without any LLM cost.
             { command: 'npx getprismo doctor --quiet 2>/dev/null || true', timeoutMs: 30_000 },
+            // Write the MCP config so the agent can reach the boss-man MCP server.
+            // Orchestrator runs get a session-scoped URL; worker runs get an empty
+            // sessionId but still have access to the beads tools.
+            { command: mcpHookCommand, timeoutMs: 5_000 },
           ],
         },
       },
