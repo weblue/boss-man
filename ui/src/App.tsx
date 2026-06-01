@@ -905,23 +905,28 @@ function taskGroup(task: BeadsTask): 'open' | 'in-progress' | 'done' {
 }
 
 function TasksTab({ project }: { project: Project }) {
-  const queryClient = useQueryClient();
-
   const tasksQuery = useQuery({
     queryKey: ['tasks'],
     queryFn: listTasks,
     refetchInterval: 10000,
   });
 
-  const closeMutation = useMutation({
-    mutationFn: (id: string) =>
-      fetch('/api/beads/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
-      }).then((r) => r.json()),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+  const runsQuery = useQuery({
+    queryKey: ['runs', project.id],
+    queryFn: () => listRuns(project.id),
+    refetchInterval: 10000,
   });
+
+  // Index runs by beads_task_id for O(1) lookup on task cards
+  const runsByTaskId = useMemo(() => {
+    const index = new Map<string, Run[]>();
+    for (const run of runsQuery.data ?? []) {
+      if (run.beads_task_id) {
+        index.set(run.beads_task_id, [...(index.get(run.beads_task_id) ?? []), run]);
+      }
+    }
+    return index;
+  }, [runsQuery.data]);
 
   const grouped = useMemo(() => {
     const groups: Record<'open' | 'in-progress' | 'done', BeadsTask[]> = {
@@ -956,30 +961,37 @@ function TasksTab({ project }: { project: Project }) {
               const body = taskValue(task, ['body', 'details', 'notes']);
               const blockers = taskValue(task, ['blocked_by', 'blockedBy', 'dependencies']);
               const runId = taskValue(task, ['run_id', 'assigned_run_id', 'runId']);
-              const isCloseable = status !== 'done';
+              const linkedRuns = runsByTaskId.get(id) ?? [];
+              // Most recent run first
+              const latestRun = linkedRuns.at(-1);
+              const hasFailedRun = linkedRuns.some((r) => r.status === 'failed');
+              const hasActiveRun = linkedRuns.some((r) => r.status === 'running' || r.status === 'queued');
               return (
                 <article key={id} className="group mb-3 rounded border border-border bg-surface p-3">
                   <div className="mb-1 flex items-center justify-between gap-2">
                     <span className="truncate text-xs font-semibold text-text-primary">{title}</span>
-                    <div className="flex shrink-0 items-center gap-1">
-                      <span className="text-[10px] text-text-muted">{id}</span>
-                      {isCloseable && (
-                        <button
-                          className="rounded p-0.5 text-text-muted opacity-0 transition-opacity hover:text-green group-hover:opacity-100 disabled:opacity-30"
-                          title="Close task"
-                          disabled={closeMutation.isPending}
-                          onClick={() => closeMutation.mutate(id)}
-                        >
-                          <Check size={11} />
-                        </button>
-                      )}
-                    </div>
+                    <span className="shrink-0 text-[10px] text-text-muted">{id}</span>
                   </div>
                   {body && <div className="line-clamp-3 text-xs leading-5 text-text-muted">{body}</div>}
-                  {(blockers || runId) && (
+                  {(blockers || latestRun || runId) && (
                     <div className="mt-3 space-y-1 border-t border-border pt-2 text-[10px] text-text-muted">
                       {blockers && <div>blocked by: {blockers}</div>}
-                      {runId && (
+                      {latestRun && (
+                        <Link
+                          className={classNames(
+                            'inline-flex max-w-full items-center gap-1 hover:underline',
+                            hasActiveRun ? 'text-orange' : hasFailedRun ? 'text-red' : 'text-blue',
+                          )}
+                          title={`Latest run: ${latestRun.status}`}
+                          to={`/projects/${project.id}/runs?run=${encodeURIComponent(latestRun.id)}`}
+                        >
+                          <Terminal size={11} className="shrink-0" />
+                          <span className="truncate">
+                            {hasActiveRun ? 'running' : hasFailedRun ? 'stalled' : 'completed'} — {latestRun.name ?? latestRun.role}
+                          </span>
+                        </Link>
+                      )}
+                      {!latestRun && runId && (
                         <Link
                           className="inline-flex max-w-full items-center gap-1 text-blue hover:underline"
                           title="Open run logs"
