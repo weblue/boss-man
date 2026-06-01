@@ -256,9 +256,9 @@ export async function startRun(options: StartRunOptions): Promise<void> {
   // issues with JSON content (no shell variable expansion needed — all values are baked in).
   function buildMcpHookCommand(provider: string): string {
     if (provider === 'codex') {
-      // TOML has no quoting issues for simple strings
-      const toml = `[mcp_servers.boss-man]\nurl = "${mcpUrl}"`;
-      return `mkdir -p /workspace/.codex && printf '%s' ${JSON.stringify(toml)} > /workspace/.codex/config.toml`;
+      // Use printf with \n in the format string — printf interprets \n as a real newline.
+      // %s is substituted with the URL (double-quoted by JSON.stringify for shell safety).
+      return `mkdir -p /workspace/.codex && printf '[mcp_servers.boss-man]\\nurl = "%s"\\n' ${JSON.stringify(mcpUrl)} > /workspace/.codex/config.toml`;
     }
     if (provider === 'opencode') {
       const json = JSON.stringify({ mcp: { 'boss-man': { type: 'remote', url: mcpUrl } } });

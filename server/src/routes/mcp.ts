@@ -27,7 +27,7 @@ async function bd(...args: string[]): Promise<string> {
     timeout: 15_000,
     env: { ...process.env, ...BD_ENV },
   });
-  return (stdout || stderr).trim();
+  return [stdout, stderr].filter(Boolean).join('\n').trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -205,14 +205,14 @@ async function callTool(
       }
 
       case 'session_set_status': {
-        if (!sessionId) {
-          return { content: [{ type: 'text', text: 'Error: no sessionId in URL' }], isError: true };
-        }
+        if (!sessionId) return err('no sessionId in URL');
+        if (!/^[0-9a-f-]{36}$/.test(sessionId)) return err('invalid sessionId format');
         const { status } = args as { status: string };
         const res = await fetch(`http://localhost:${SERVER_PORT}/api/sessions/${sessionId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status }),
+          signal: AbortSignal.timeout(10_000),
         });
         if (res.ok) return ok(`status updated to ${status}`);
         const text = await res.text();
@@ -220,12 +220,11 @@ async function callTool(
       }
 
       case 'session_compact': {
-        if (!sessionId) {
-          return { content: [{ type: 'text', text: 'Error: no sessionId in URL' }], isError: true };
-        }
+        if (!sessionId) return err('no sessionId in URL');
+        if (!/^[0-9a-f-]{36}$/.test(sessionId)) return err('invalid sessionId format');
         const res = await fetch(
           `http://localhost:${SERVER_PORT}/api/sessions/${sessionId}/compact`,
-          { method: 'POST' },
+          { method: 'POST', signal: AbortSignal.timeout(10_000) },
         );
         if (res.ok) return ok('compaction triggered, exit now');
         const text = await res.text();
@@ -280,14 +279,21 @@ router.get('/mcp', (c) => {
 
 // POST /mcp — main JSON-RPC handler
 router.post('/mcp', async (c) => {
-  let body: JsonRpcRequest;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let body: any;
   try {
     body = await c.req.json();
   } catch {
     return jsonRpcError(null, -32700, 'Parse error');
   }
 
-  const { id, method, params } = body;
+  // JSON-RPC 2.0 requires the request to be an object (not array, null, primitive).
+  // Arrays would be batch requests — not supported; null/primitives are invalid.
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonRpcError(null, -32600, 'Invalid Request');
+  }
+
+  const { id, method, params } = body as JsonRpcRequest;
 
   // Notifications have no `id` — respond with HTTP 202 and no body
   if (id === undefined) {
@@ -308,6 +314,9 @@ router.post('/mcp', async (c) => {
 
     case 'tools/list':
       return jsonRpcOk(id, { tools: TOOLS });
+
+    case 'ping':
+      return jsonRpcOk(id, {});
 
     case 'tools/call': {
       const toolName: string = params?.name;

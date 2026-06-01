@@ -195,7 +195,11 @@ spawn-worker --wait \
 RESEARCH=$(cat /workspace/$RESEARCH_FILE 2>/dev/null || echo "(research file not found)")
 ```
 
-**1. Tests first (mandatory).** `spawn-worker --wait` blocks until the run finishes (exit 0 = completed, non-zero = failed/cancelled). Passing `--beads-task-id` links and claims the task.
+**1. Tests first (mandatory).** Before spawning the worker, claim the task so it shows as in-progress:
+```
+beads_update_task(task_id="bd-XXXX", claim=true)
+```
+Then spawn — `spawn-worker --wait` blocks until the run finishes (exit 0 = completed, non-zero = failed/cancelled). Passing `--beads-task-id` links the run to the task.
 ```bash
 # test_generator → medium (see worker model table)
 spawn-worker --wait \
