@@ -642,7 +642,10 @@ function ChatTab({ project }: { project: Project }) {
                 const assistantText = runEvents
                   .filter((event) => event.type === 'text' && event.text)
                   .map((event) => event.text)
-                  .join('');
+                  .join('')
+                  // Replace the completion signal with a visual separator so it
+                  // doesn't appear as a raw XML tag in the rendered markdown.
+                  .replace(/<task-complete\/>/g, '\n\n---');
                 const toolEvents = runEvents.filter((event) => event.type === 'toolCall');
                 const running = isActive(run.status);
 

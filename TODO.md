@@ -105,8 +105,6 @@ Goal: the web UI should expose the full useful experience of a Docker-contained 
 - [x] **prismo doctor on session start**: already present in orchestrator startup section (step 4)
 - ~~**Orchestrator tool restrictions**~~ — moved to Phase 8 (SDK-blocked).
 - [ ] **Langfuse trace linking**: capture `x-langfuse-trace-id` response header from LiteLLM and store in `runs.langfuse_trace_id`. Surface in UI run detail. Complex — traces are created inside the sandbox by Claude Code's LiteLLM calls; no direct header access from the runner.
-- ~~**Orchestrator tool restrictions**~~ — `ClaudeCodeOptions` does not expose `--allowedTools`; prompt-level enforcement is the current mitigation. Tracked in Phase 8.
-- ~~**bd CLI verification**~~ — removed; this is a one-time manual test, not a persistent TODO item.
 
 ---
 

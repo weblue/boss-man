@@ -12,6 +12,8 @@ dist/
 projects/*
 !projects/.gitkeep
 
+.claude/worktrees
+
 # Beads / Dolt files (added by bd init)
 .beads/
 .dolt/

@@ -217,15 +217,28 @@ curl -s -X POST "$BOSS_MAN_API_URL/api/beads/complete" \
 **4. Re-poll unblocked tasks** and repeat until none remain.
 
 **Final gate (after all tasks close):**
+
+Capture each run ID so you can surface it on failure. A non-zero exit means the run crashed or was cancelled — not that the review found issues (a completed review that finds problems still exits 0 and describes them in its output).
+
 ```bash
-# reviewer → high; security_reviewer → high (see worker model table)
-spawn-worker --wait --role reviewer --model high \
-  --prompt "Review all changes against /workspace/.spec/spec.md"
-spawn-worker --wait --role security_reviewer --model high \
-  --prompt "Security-audit all changes; assess attack surface against /workspace/.spec/plan.md"
+# reviewer → high
+if ! REVIEWER_RUN=$(spawn-worker --wait --role reviewer --model high \
+  --prompt "Review all changes against /workspace/.spec/spec.md"); then
+  echo "Reviewer run $REVIEWER_RUN failed or was cancelled."
+  echo "Reply with instructions: retry the reviewer, fix a known blocker first, or skip."
+  <task-complete/>
+fi
+
+# security_reviewer → high
+if ! SECURITY_RUN=$(spawn-worker --wait --role security_reviewer --model high \
+  --prompt "Security-audit all changes; assess attack surface against /workspace/.spec/plan.md"); then
+  echo "Security reviewer run $SECURITY_RUN failed or was cancelled."
+  echo "Reply with instructions: retry, fix a known blocker first, or skip."
+  <task-complete/>
+fi
 ```
 
-When both reviews pass, mark the session complete and tell the user:
+If both runs complete (exit 0), summarise any issues the reviews flagged. If there are blocking issues, spawn an implementer to address them and rerun the gate. When all clear, mark the session complete and tell the user:
 ```bash
 curl -s -X PATCH "$BOSS_MAN_API_URL/api/sessions/$BOSS_MAN_SESSION_ID" \
   -H "Content-Type: application/json" -d '{"status":"complete"}'
