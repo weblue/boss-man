@@ -17,6 +17,7 @@ import {
   Loader2,
   MessageSquare,
   Plus,
+  RefreshCw,
   Search,
   Send,
   Square,
@@ -26,6 +27,7 @@ import {
 } from 'lucide-react';
 import {
   cancelRun,
+  compactSession,
   createProject,
   deleteProject,
   deleteSession,
@@ -495,6 +497,16 @@ function ChatTab({ project }: { project: Project }) {
     },
   });
 
+  const compactMutation = useMutation({
+    mutationFn: (sessionId: string) => compactSession(sessionId),
+    onSuccess: (result) => {
+      setSelectedSessionId(result.session.id);
+      queryClient.invalidateQueries({ queryKey: ['sessions', project.id] });
+      queryClient.invalidateQueries({ queryKey: ['session', result.session.id] });
+      queryClient.invalidateQueries({ queryKey: ['runs', project.id] });
+    },
+  });
+
   useEventStream(streamPath, (event) => {
     if (!currentRunId) return;
     setEventsByRun((prev) => ({
@@ -598,6 +610,19 @@ function ChatTab({ project }: { project: Project }) {
                 <span className="truncate text-xs font-semibold text-text-primary">{session.name ?? `Session ${session.id.slice(0, 8)}`}</span>
                 <div className="flex shrink-0 items-center gap-1">
                   <StatusBadge status={sessionPhaseLabel(session, allRunsQuery.data ?? [])} />
+                  {session.status !== 'complete' && (
+                    <button
+                      className="shrink-0 rounded p-0.5 text-text-muted opacity-0 transition-opacity hover:text-blue group-hover:opacity-100"
+                      title="Compact context — starts fresh run seeded from checkpoint.md"
+                      disabled={compactMutation.isPending}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        compactMutation.mutate(session.id);
+                      }}
+                    >
+                      <RefreshCw size={12} />
+                    </button>
+                  )}
                   {session.status !== 'complete' && (
                     <button
                       className="shrink-0 rounded p-0.5 text-text-muted opacity-0 transition-opacity hover:text-green group-hover:opacity-100"

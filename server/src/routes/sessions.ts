@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { v4 as uuidv4 } from 'uuid';
 import {
   insertSession, getSession, listSessions, updateSession, deleteSession,
@@ -303,6 +304,114 @@ router.post('/api/sessions/:id/reply', async (c) => {
   } finally {
     replyLocks.delete(session.id);
   }
+});
+
+/**
+ * Read checkpoint.md from git across all branches (orchestrators commit to worktree branches).
+ * Returns null when the file has never been committed.
+ */
+function readCheckpointFromGit(repoPath: string): string | null {
+  try {
+    const hash = execFileSync(
+      'git',
+      ['-C', repoPath, 'log', '--all', '-1', '--format=%H', '--', '.spec/checkpoint.md'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim();
+    if (!hash) return null;
+    return execFileSync('git', ['-C', repoPath, 'show', `${hash}:.spec/checkpoint.md`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build the compact-resume prompt: full orchestrator system prompt + checkpoint state.
+ * The agent receives a fresh context (no conversation history) but knows exactly
+ * where the previous run left off.
+ */
+function buildCompactPrompt(checkpointContent: string): string {
+  const base = loadOrchestratorPrompt();
+  const resume = [
+    '---',
+    '',
+    '## Resuming from Compacted Context',
+    '',
+    'The previous orchestrator run accumulated too much context and was compacted to reduce',
+    'token usage. You are starting with a completely fresh context window. Your tools, API,',
+    'and workspace are all intact — only the conversation history was dropped.',
+    '',
+    '**Do not re-introduce yourself, re-ask questions already answered, or repeat completed',
+    'work.** Read the checkpoint below and resume immediately from where the previous run',
+    'left off.',
+    '',
+    '```',
+    checkpointContent.trim(),
+    '```',
+    '',
+    'Resume now.',
+  ].join('\n');
+  return base ? `${base}\n\n${resume}` : resume;
+}
+
+// POST /api/sessions/:id/compact — context compaction
+// Called by the orchestrator when its context grows too large. Starts a brand-new
+// orchestrator run (no resumeSessionId) seeded with checkpoint.md so the agent
+// continues with a clean context window instead of an ever-growing session JSONL.
+router.post('/api/sessions/:id/compact', async (c) => {
+  const session = getSession(c.req.param('id'));
+  if (!session) return c.json({ error: 'Session not found' }, 404);
+
+  const project = getProject(session.project_id);
+  if (!project) return c.json({ error: 'Project not found' }, 404);
+
+  // Read the checkpoint the orchestrator should have committed before calling this.
+  const checkpoint = readCheckpointFromGit(project.repo_path);
+  if (!checkpoint) {
+    return c.json({
+      error: 'No checkpoint.md found in git. Commit .spec/checkpoint.md before compacting.',
+    }, 422);
+  }
+
+  // Derive runtime from the previous run so model/provider are preserved.
+  const prevRun = session.current_run_id ? getRun(session.current_run_id) : null;
+  const runtime = runtimeFromBody(null, prevRun ? {
+    agentProvider: prevRun.agent_provider,
+    claudeAuthProvider: prevRun.claude_auth_provider,
+    model: prevRun.model,
+  } : undefined);
+
+  // Re-use the same branch so the fresh run works in the same worktree.
+  const branch = prevRun?.branch ?? `orchestrator/${session.id.slice(0, 8)}`;
+  const fullPrompt = buildCompactPrompt(checkpoint);
+
+  // maxIterations same as the initial start — compact runs need to complete the pipeline.
+  const runId = makeRun(session.project_id, session.id, fullPrompt, branch, 'Orchestrator — compact', runtime, 50);
+
+  // Point the session at the new run immediately; the old run will finish (exit 0) shortly.
+  updateSession(session.id, { current_run_id: runId });
+
+  // Start the new run WITHOUT resumeSessionId — this is the key: fresh context.
+  startRun({
+    id: runId,
+    projectId: session.project_id,
+    repoPath: project.repo_path,
+    prompt: fullPrompt,
+    model: runtime.model,
+    sandboxProvider: 'docker',
+    branch,
+    maxIterations: 50,
+    name: 'Orchestrator — compact',
+    role: 'orchestrator',
+    agentProvider: runtime.agentProvider,
+    claudeAuthProvider: runtime.claudeAuthProvider,
+    // resumeSessionId intentionally omitted — fresh context window
+    orchestratorSessionId: session.id,
+  }).catch(console.error);
+
+  return c.json({ session: getSession(session.id), run: getRun(runId) }, 201);
 });
 
 // DELETE /api/sessions/:id — cascade-delete a session and all its runs/events
