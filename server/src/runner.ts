@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { execFileSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { updateRun } from './db.js';
+import { updateRun, getRun } from './db.js';
 import { pushEvent, cleanupRunStream } from './streaming.js';
 import {
   CLAUDE_CODE_AUTH_MODE,
@@ -29,9 +29,39 @@ import {
   resolveClaudeAuthProvider,
   resolveClaudeCodeModel,
   resolveTier,
+  BEADS_STORE_PASSWORD,
 } from './config.js';
 
 const execFileAsync = promisify(execFile);
+
+const BD_ENV: Record<string, string> = {
+  BD_NON_INTERACTIVE: '1',
+  ...(BEADS_STORE_PASSWORD ? { BEADS_DOLT_PASSWORD: BEADS_STORE_PASSWORD } : {}),
+};
+
+/**
+ * Auto-close a Beads task when its associated run completes successfully.
+ * The orchestrator is supposed to call POST /api/beads/complete itself, but
+ * sometimes it forgets (crash, compaction, orphaned turn). This is the safety net.
+ * Fire-and-forget — we log but never throw.
+ */
+async function autoCloseBeadsTask(runId: string): Promise<void> {
+  const run = getRun(runId);
+  if (!run?.beads_task_id) return;
+  try {
+    await execFileAsync('bd', ['close', run.beads_task_id], {
+      timeout: 10_000,
+      env: { ...process.env, ...BD_ENV },
+    });
+    console.log(`[runner] auto-closed beads task ${run.beads_task_id} for run ${runId}`);
+  } catch (err) {
+    // Task may already be closed — that's fine. Just log.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('already closed') && !msg.includes('not found')) {
+      console.warn(`[runner] beads auto-close failed for ${run.beads_task_id}: ${msg}`);
+    }
+  }
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', '..', 'data');
@@ -300,6 +330,10 @@ export async function startRun(options: StartRunOptions): Promise<void> {
       last_session_id: lastSession,
       changed_files: changedFiles.length > 0 ? JSON.stringify(changedFiles) : null,
     });
+
+    // Auto-close the associated Beads task if the run was linked to one.
+    // Safety net for when the orchestrator forgets to call /api/beads/complete.
+    autoCloseBeadsTask(options.id).catch(() => { /* already logged inside */ });
 
     pushEvent(options.id, { type: 'done', timestamp: new Date().toISOString() });
   } catch (err: unknown) {
