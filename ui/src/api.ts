@@ -9,6 +9,7 @@ import type {
   TranscriptEntry,
 } from './types';
 
+
 async function parseError(res: Response): Promise<string> {
   const text = await res.text().catch(() => res.statusText);
   if (!text) return res.statusText;
@@ -135,6 +136,32 @@ export async function deleteSession(sessionId: string): Promise<{ deleted: boole
 export async function deleteProject(projectId: string): Promise<{ deleted: boolean }> {
   return json<{ deleted: boolean }>(
     await fetch(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
+  );
+}
+
+export async function mergeToMain(
+  projectId: string,
+  branch: string,
+): Promise<{ merged: boolean; output: string }> {
+  return json<{ merged: boolean; output: string }>(
+    await fetch(`/api/projects/${encodeURIComponent(projectId)}/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branch }),
+    }),
+  );
+}
+
+export async function patchSession(
+  sessionId: string,
+  updates: { status?: string; name?: string },
+): Promise<Session> {
+  return json<Session>(
+    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    }),
   );
 }
 
