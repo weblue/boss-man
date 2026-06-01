@@ -133,7 +133,32 @@ function useEventStream(path: string | null, onEvent: (event: AgentEvent) => voi
   }, [path]);
 }
 
-function StatusBadge({ status }: { status: string }) {
+/** Maps a run role to a human-readable TDD lifecycle phase label */
+const ROLE_PHASE: Record<string, string> = {
+  orchestrator: '',          // use session.status instead
+  researcher:        'researching',
+  test_generator:    'writing tests',
+  implementer:       'implementing',
+  reviewer:          'reviewing',
+  security_reviewer: 'security review',
+  refactor:          'refactoring',
+};
+
+/**
+ * Derives a display label for a session based on its active worker runs.
+ * When a non-orchestrator worker is running, shows the TDD phase instead of
+ * the generic session status so the user can see where in the pipeline things are.
+ */
+function sessionPhaseLabel(session: Session, projectRuns: Run[]): string {
+  const sessionRuns = projectRuns.filter((r) => r.orchestrator_session_id === session.id);
+  const active = sessionRuns.find((r) => r.status === 'queued' || r.status === 'running');
+  if (active && active.role !== 'orchestrator') {
+    return ROLE_PHASE[active.role] ?? active.role;
+  }
+  return session.status;
+}
+
+function StatusBadge({ status, pulse }: { status: string; pulse?: boolean }) {
   const color =
     status === 'running' || status === 'completed' || status === 'complete'
       ? 'text-green'
@@ -141,11 +166,18 @@ function StatusBadge({ status }: { status: string }) {
         ? 'text-red'
         : status === 'queued' || status === 'planning'
           ? 'text-orange'
-          : 'text-text-muted';
+          : status === 'researching' || status === 'writing tests' || status === 'implementing' ||
+            status === 'reviewing' || status === 'security review' || status === 'refactoring'
+            ? 'text-blue'
+            : 'text-text-muted';
+
+  const isPulsing = pulse ?? (status === 'running' || status === 'queued' ||
+    status === 'researching' || status === 'writing tests' || status === 'implementing' ||
+    status === 'reviewing' || status === 'security review' || status === 'refactoring');
 
   return (
     <span className="inline-flex items-center gap-1 text-xs">
-      <span className={classNames(color, status === 'running' && 'animate-pulse')}>•</span>
+      <span className={classNames(color, isPulsing && 'animate-pulse')}>•</span>
       <span className={color}>{status}</span>
     </span>
   );
@@ -442,7 +474,8 @@ function ChatTab({ project }: { project: Project }) {
   const allRunsQuery = useQuery({
     queryKey: ['runs', project.id],
     queryFn: () => listRuns(project.id),
-    staleTime: 10_000,
+    // Poll every 5s so the TDD phase badge updates as workers spin up/down.
+    refetchInterval: 5000,
   });
 
   const deleteMutation = useMutation({
@@ -564,7 +597,7 @@ function ChatTab({ project }: { project: Project }) {
               <div className="flex items-center justify-between gap-2">
                 <span className="truncate text-xs font-semibold text-text-primary">{session.name ?? `Session ${session.id.slice(0, 8)}`}</span>
                 <div className="flex shrink-0 items-center gap-1">
-                  <StatusBadge status={session.status} />
+                  <StatusBadge status={sessionPhaseLabel(session, allRunsQuery.data ?? [])} />
                   {session.status !== 'complete' && (
                     <button
                       className="shrink-0 rounded p-0.5 text-text-muted opacity-0 transition-opacity hover:text-green group-hover:opacity-100"
@@ -1336,6 +1369,8 @@ function SpecTab({ project }: { project: Project }) {
   const specsQuery = useQuery({
     queryKey: ['specs', project.id],
     queryFn: () => listSpecs(project.id),
+    // Poll periodically so newly committed spec files appear without a manual reload.
+    refetchInterval: 30_000,
   });
 
   useEffect(() => {

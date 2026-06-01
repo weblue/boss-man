@@ -79,18 +79,33 @@ router.post('/api/projects/:id/merge', async (c) => {
     return c.json({ error: `Branch '${branch}' not found in this repository` }, 404);
   }
 
+  let mergeOutput = '';
   try {
     const { stdout, stderr } = await execFileAsync(
       'git',
       ['-C', project.repo_path, 'merge', '--no-ff', branch, '-m', `merge: ${branch} into main`],
       { timeout: 30_000 },
     );
-    return c.json({ merged: true, output: (stdout + stderr).trim() });
+    mergeOutput = (stdout + stderr).trim();
   } catch (err: unknown) {
     // git merge exits non-zero on conflicts or already-up-to-date; surface the message
     const msg = err instanceof Error ? err.message : String(err);
-    return c.json({ error: msg }, 500);
+    // If already up to date (agent advanced the ref directly), that's fine — still sync the working tree.
+    if (!msg.includes('Already up to date') && !msg.includes('already up to date')) {
+      return c.json({ error: msg }, 500);
+    }
+    mergeOutput = 'Already up to date.';
   }
+
+  // Always hard-reset the working tree to HEAD so files are visible even when an agent
+  // advanced the branch ref directly (e.g. git update-ref) without touching the worktree.
+  try {
+    await execFileAsync('git', ['-C', project.repo_path, 'reset', '--hard', 'HEAD'], { timeout: 10_000 });
+  } catch {
+    // Best-effort; don't fail the whole merge if reset fails.
+  }
+
+  return c.json({ merged: true, output: mergeOutput });
 });
 
 router.delete('/api/projects/:id', (c) => {
