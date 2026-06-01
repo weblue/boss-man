@@ -6,8 +6,10 @@ import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github-dark.css';
 import {
   Bot,
+  Check,
   ChevronDown,
   Clock3,
+  GitMerge,
   FileText,
   FolderGit2,
   History,
@@ -27,6 +29,8 @@ import {
   createProject,
   deleteProject,
   deleteSession,
+  mergeToMain,
+  patchSession,
   getProject,
   getRun,
   getRunEvents,
@@ -450,6 +454,14 @@ function ChatTab({ project }: { project: Project }) {
     },
   });
 
+  const setStatusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: string }) => patchSession(id, { status }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sessions', project.id] });
+      queryClient.invalidateQueries({ queryKey: ['session', selectedSessionId] });
+    },
+  });
+
   useEventStream(streamPath, (event) => {
     if (!currentRunId) return;
     setEventsByRun((prev) => ({
@@ -553,8 +565,20 @@ function ChatTab({ project }: { project: Project }) {
                 <span className="truncate text-xs font-semibold text-text-primary">{session.name ?? `Session ${session.id.slice(0, 8)}`}</span>
                 <div className="flex shrink-0 items-center gap-1">
                   <StatusBadge status={session.status} />
+                  {session.status !== 'complete' && (
+                    <button
+                      className="shrink-0 rounded p-0.5 text-text-muted opacity-0 transition-opacity hover:text-green group-hover:opacity-100"
+                      title="Mark complete"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setStatusMutation.mutate({ id: session.id, status: 'complete' });
+                      }}
+                    >
+                      <Check size={12} />
+                    </button>
+                  )}
                   <button
-                    className="ml-auto shrink-0 rounded p-0.5 text-text-muted opacity-0 transition-opacity hover:text-red group-hover:opacity-100"
+                    className="shrink-0 rounded p-0.5 text-text-muted opacity-0 transition-opacity hover:text-red group-hover:opacity-100"
                     title="Delete session"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -800,7 +824,17 @@ function taskValue(task: BeadsTask, keys: string[]): string {
     const value = task[key];
     if (typeof value === 'string') return value;
     if (typeof value === 'number') return String(value);
-    if (Array.isArray(value)) return value.map(String).join(', ');
+    if (Array.isArray(value)) {
+      return value.map((item) => {
+        if (typeof item === 'string' || typeof item === 'number') return String(item);
+        // Beads dependency objects: { depends_on_id, issue_id, type, ... }
+        if (item && typeof item === 'object') {
+          const obj = item as Record<string, unknown>;
+          return String(obj.depends_on_id ?? obj.issue_id ?? obj.id ?? '?');
+        }
+        return '?';
+      }).filter(Boolean).join(', ');
+    }
   }
   return '';
 }
@@ -1005,6 +1039,13 @@ function RunsTab({ project }: { project: Project }) {
     },
   });
 
+  const [mergeOutput, setMergeOutput] = useState<string | null>(null);
+  const mergeMutation = useMutation({
+    mutationFn: (branch: string) => mergeToMain(project.id, branch),
+    onSuccess: (result) => setMergeOutput(result.output),
+    onError: (err) => setMergeOutput(err instanceof Error ? err.message : String(err)),
+  });
+
   const logEvents = selectedRun ? mergeEvents(runEventsQuery.data, eventsByRun[selectedRun.id]) : [];
 
   const orcAllEvents = useMemo(() => {
@@ -1176,7 +1217,25 @@ function RunsTab({ project }: { project: Project }) {
                   </button>
                 </>
               )}
+              {selectedRun.status === 'completed' && selectedRun.branch && (
+                <button
+                  className="icon-button"
+                  title={`Merge ${selectedRun.branch} into main`}
+                  disabled={mergeMutation.isPending}
+                  onClick={() => { setMergeOutput(null); mergeMutation.mutate(selectedRun.branch); }}
+                >
+                  {mergeMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <GitMerge size={14} />}
+                </button>
+              )}
             </div>
+            {mergeOutput && (
+              <div className="shrink-0 border-b border-border bg-elevated/50 px-4 py-3 text-xs">
+                <div className="mb-1 font-semibold text-text-muted">
+                  {mergeMutation.isError ? '✗ Merge failed' : '✓ Merged to main'}
+                </div>
+                <pre className="overflow-x-auto whitespace-pre-wrap text-text-muted">{mergeOutput}</pre>
+              </div>
+            )}
             {showDebug && isActive(selectedRun.status) && (
               <div className="shrink-0 border-b border-border bg-elevated/50 px-4 py-3 text-xs">
                 <div className="mb-1 text-text-muted">List sandbox containers:</div>
