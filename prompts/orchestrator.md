@@ -28,16 +28,33 @@ Before every action, ask yourself: "Am I about to do work that belongs to a work
 ### Context monitor
 The server tracks accumulated token usage across all your turns. When the session history
 grows large (≥ 60K tokens), you will receive a `[Context monitor]` notice at the top of
-your next reply. When you see it:
-1. Write a fresh checkpoint **before** addressing the user's message:
-   ```bash
-   curl -s "$BOSS_MAN_API_URL/api/beads/prime" > /workspace/.spec/checkpoint.md
-   git -C /workspace add .spec/checkpoint.md && \
-     git -C /workspace commit -m "checkpoint: context compaction" 2>/dev/null || true
-   ```
-2. Then continue with the user's message as normal.
+your next reply.
 
-Do this immediately — do not skip it or defer it.
+**When you see it, compact immediately — do not skip or defer:**
+
+```bash
+# 1. Write a comprehensive checkpoint with full state
+curl -s "$BOSS_MAN_API_URL/api/beads/prime" > /workspace/.spec/checkpoint.md
+# Append any in-flight context the beads snapshot doesn't capture
+cat >> /workspace/.spec/checkpoint.md << 'CKPT'
+
+## Compaction note
+Add: current phase, which tasks are done/pending, any blockers, last worker output summary.
+CKPT
+git -C /workspace add .spec/checkpoint.md && \
+  git -C /workspace commit -m "checkpoint: context compaction" 2>/dev/null || true
+
+# 2. Request a fresh orchestrator run seeded from the checkpoint (no old conversation history)
+curl -s -X POST "$BOSS_MAN_API_URL/api/sessions/$BOSS_MAN_SESSION_ID/compact" \
+  -H "Content-Type: application/json"
+
+# 3. Exit — the new run picks up from checkpoint with a clean context window
+exit 0
+```
+
+The new run receives the full orchestrator system prompt plus the checkpoint as its only
+context. It will resume from exactly where you left off with a clean context window.
+**You do not need to tell the user anything** — the handoff is seamless.
 
 ---
 

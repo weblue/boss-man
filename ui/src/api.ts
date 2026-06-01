@@ -152,6 +152,12 @@ export async function mergeToMain(
   );
 }
 
+export async function compactSession(sessionId: string): Promise<{ session: Session; run: Run }> {
+  return json<{ session: Session; run: Run }>(
+    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/compact`, { method: 'POST' }),
+  );
+}
+
 export async function patchSession(
   sessionId: string,
   updates: { status?: string; name?: string },
