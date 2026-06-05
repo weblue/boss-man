@@ -15,6 +15,8 @@
 #### 3e — Run History tab
 #### 3f — Spec viewer tab
 
+### Phase 4 — Agent Interaction UX
+
 ### Phase 5 — Worker Improvements
 
 ### Phase 6 — Sandbox Image Build & CI
@@ -24,20 +26,6 @@
 
 
 ## TODO
-
-### Phase 4 — Agent Interaction UX
-
-Goal: the web UI should expose the full useful experience of a Docker-contained Claude Code (or other) agent without making tmux/container terminal state the source of truth. The core contract is an append-only structured event stream: containers execute the agent and emit events, the API persists and broadcasts those events, SQLite provides short-term replay, and tmux/docker exec remains a debug escape hatch.
-
-- ~~**Event stream contract**~~ — dropped; the stream already works in practice (seq, replay, heartbeat, dedup). Writing a formal spec for a project you own adds no value.
-- [ ] **Structured agent event model**: expand persisted/SSE events beyond text and tool-call starts to include `assistant_text_delta`, `tool_call_started`, `tool_stdout`, `tool_stderr`, `tool_result`, `file_changed`, `diff_available`, `approval_requested`, `run_status_changed`, `error`, and `done`. *(blocked: Sandcastle only emits `text` and `toolCall` events)*
-- [x] **Tool activity UI**: render expandable tool-call rows in Chat and Runs with command and args; click to expand full text.
-- [x] **Diff/file-change surfacing**: detect changed files after each run via `git diff --name-only`; store in `runs.changed_files`; render file list in run detail panel.
-- [x] **Attach terminal debug action**: debug panel with `docker ps` and `docker exec` commands shown for active runs in the Runs tab.
-- [x] **Transcript retention policy**: `DELETE /api/sessions/:id` cascade-deletes all runs and events; delete session button (with confirm) added to chat sidebar.
-- [x] **Worker links in orchestrator transcript**: parse `spawn-worker --role` from Bash toolCall events; render linked chips to the matching worker run.
-
----
 
 ### Phase 10 — LiteLLM Rules-Based Routing
 
@@ -51,6 +39,7 @@ Goal: replace static `boss-man/high|medium|low` tier aliases with intelligent ru
 - [ ] **Context-length routing**: route to Claude's larger context window automatically when prompt + history exceeds a threshold (e.g. >80k tokens → prefer long-context variant).
 - [ ] **UI exposure**: show the resolved model (after routing) in the run detail alongside the requested tier, so it's clear which model actually ran.
 
+---
 
 ### Phase 11 - auth/security
 
@@ -59,15 +48,16 @@ Goal: replace static `boss-man/high|medium|low` tier aliases with intelligent ru
 
 ---
 
-### Phase 8 — Token Efficiency (deferred items)
+### Phase 8 — Token Efficiency & SDK Improvements
 
-These items were identified during a token-waste audit. Each is blocked on an upstream `@ai-hero/sandcastle` SDK capability. If we fork the dep, these are the target changes.
+Items ordered by impact on token cost / project health. Most are blocked on upstream `@ai-hero/sandcastle` SDK capabilities; if we fork the dep these become actionable. Items marked **[no SDK needed]** are unblocked today.
 
 ---
 
-#### [BLOCKED: SDK] #2 — Multi-iteration workers restart cold on every iteration
+#### #1 — Multi-iteration workers restart cold on every iteration
+`[BLOCKED: SDK]` · **Token impact: critical** — proven 250K input tokens on a single 10-iteration implementer run
 
-**Impact:** Proven 250K input tokens on a single 10-iteration implementer run. Each iteration re-reads the full codebase context from scratch.
+Each iteration re-reads the full codebase context from scratch.
 
 **Root cause:** In `@ai-hero/sandcastle/dist/Orchestrator.js`:
 ```js
@@ -81,9 +71,8 @@ Resume is only applied on iteration 1. Iterations 2–N launch Claude Code fresh
 
 ---
 
-#### [BLOCKED: SDK] #1 (partial) — Session JSONL compaction between reply turns
-
-**Impact:** Orchestrator session history grows unboundedly. By turn 12 the session re-reads 49K+ tokens of prior tool calls and outputs on every resume.
+#### #2 — Session JSONL compaction between reply turns
+`[BLOCKED: SDK]` (partial workaround in place) · **Token impact: high** — orchestrator accumulates 49K+ tokens of prior tool calls by turn 12
 
 **What's implemented:** The server detects cumulative token growth > 60K and prepends a `[Context monitor]` notice asking the orchestrator to write `checkpoint.md`. This prompts the orchestrator to save state, but does NOT shorten the session JSONL that Claude Code replays on the next resume — the file just keeps growing.
 
@@ -95,38 +84,42 @@ Neither exists today. The checkpoint write buys time but doesn't eliminate the g
 
 ---
 
-#### [BLOCKED: SDK] #3 — Cache-prefix stability for orchestrator system prompt
+#### #3 — Cache-prefix stability for orchestrator system prompt
+`[BLOCKED: SDK]` · **Token impact: medium** — ~2,800-token static prefix re-paid on every new session
 
-**Impact:** Anthropic's prompt cache cannot hit the stable `orchestrator.md` prefix (~2,800 tokens) because it's concatenated with the per-session user message inside `buildFirstTurnPrompt()`. Every new session pays full cache-creation cost for the static instructions.
+Anthropic's prompt cache cannot hit the stable `orchestrator.md` prefix because it's concatenated with the per-session user message inside `buildFirstTurnPrompt()`. Every new session pays full cache-creation cost for the static instructions.
 
-**Partial fix available now (no SDK needed):** Memoize `loadOrchestratorPrompt()` at module load in `routes/sessions.ts` — currently it does `readFileSync` on every call. Low-value but trivial.
+**Partial fix available now (no SDK needed):** Memoize `loadOrchestratorPrompt()` at module load in `routes/sessions.ts` — currently it does `readFileSync` on every call. Low-value but trivial to land.
 
 **Full fix blocked on SDK:** `ClaudeCodeOptions` (in `AgentProvider.d.ts`) currently only exposes `effort`, `env`, `captureSessions`, `sessionStorage` — no `systemPrompt` field. If added, move the static orchestrator instructions to the system turn so they cache independently of the variable user message.
 
 ---
 
-#### [BLOCKED: SDK] #4 — Worker system prompts in user-turn instead of system param
+#### #4 — Worker system prompts in user-turn instead of system param
+`[BLOCKED: SDK]` · **Token impact: medium** — ~750–1,200 bytes of static role boilerplate cannot cache per worker call
 
-**Impact:** All worker templates concatenate role boilerplate (~750–1,200 bytes of static instructions) with the variable task description in a single user message. The static portion cannot cache as a stable prefix.
+All worker templates concatenate role boilerplate with the variable task description in a single user message. The static portion cannot cache as a stable prefix.
 
 **Blocked on:** Same `ClaudeCodeOptions.systemPrompt` gap as #3. No workaround until the SDK exposes it.
 
 ---
 
-#### [BLOCKED: SDK] #5 — Orchestrator tool restrictions
+#### #5 — Cancelled runs discard partial session IDs
+`[BLOCKED: SDK]` · **Token impact: medium** — cancelled workers restart fully cold on retry, wasting all context from completed iterations
 
-**Impact:** The orchestrator can call any tool, including ones it should never touch (file edits outside `.spec/`, running builds directly). Prompt-level enforcement is the current mitigation but is not enforced.
-
-**Fix needed in SDK:** `ClaudeCodeOptions` needs to expose `--allowedTools` / `--disallowedTools` so the server can restrict the orchestrator to `Bash`, `Read`, and specific write paths at launch time.
-
----
-
-#### [BLOCKED: SDK] #8 — Cancelled runs discard partial session IDs
-
-**Impact:** If a worker run is cancelled after 5 of 10 iterations complete, the captured session state from those 5 iterations is lost. Any retry starts completely cold.
+If a worker run is cancelled after N of M iterations complete, the captured session state from those iterations is lost.
 
 **Fix needed in SDK:** Expose per-iteration session IDs via a callback (e.g. in `logging.onAgentStreamEvent` or a new `onIterationComplete` hook) so the server can call `updateRun(id, { last_session_id })` after each iteration rather than waiting for the final result. `IterationResult.sessionId` is already populated per-iteration in the result array — the SDK just doesn't expose it mid-run.
 
 **Current workaround:** For orchestrator sessions, `routes/sessions.ts` scans all runs in the session for the last non-null `last_session_id` when building a reply, so partial progress survives across turns. Worker runs have no equivalent recovery path.
+
+---
+
+#### #7 — Structured agent event model
+`[BLOCKED: SDK]` · **Impact: observability** — richer UI fidelity; no token savings
+
+Expand persisted/SSE events beyond `text` and `toolCall` starts to include `assistant_text_delta`, `tool_call_started`, `tool_stdout`, `tool_stderr`, `tool_result`, `file_changed`, `diff_available`, `approval_requested`, `run_status_changed`, `error`, and `done`.
+
+**Blocked on:** Sandcastle only emits `text` and `toolCall` events today. Full event taxonomy requires the SDK to surface the underlying Claude Code event stream.
 
 ---
