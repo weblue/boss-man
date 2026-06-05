@@ -68,7 +68,6 @@ node_version=$(node --version | sed 's/v//' | cut -d. -f1)
 
 LITELLM_PORT="${LITELLM_PORT:-4000}"
 LANGFUSE_PORT="${LANGFUSE_PORT:-3002}"
-DOLT_PORT="${DOLT_PORT:-3306}"
 SERVER_PORT="${SERVER_PORT:-3001}"
 SANDBOX_IMAGE="${SANDBOX_IMAGE:-boss-man:sandbox}"
 

@@ -391,7 +391,6 @@ function ProjectRoute() {
             <div className="truncate text-sm font-semibold text-text-primary">{project.name}</div>
             <div className="truncate text-xs text-text-muted">{project.repo_path}</div>
           </div>
-          {project.beads_db && <span className="text-xs text-text-muted">bd: {project.beads_db}</span>}
         </div>
         <nav className="flex px-2">
           {tabs.map((item) => {

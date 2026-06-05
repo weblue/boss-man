@@ -2,10 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(gh clone *)",
-      "Bash(bd show *)",
-      "Bash(bd list *)",
-      "Bash(dolt status *)",
-      "WebFetch"
+"WebFetch"
     ]
   }
 }

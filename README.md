@@ -16,8 +16,9 @@ Browser UI (Vite + React)
    ┌────┼────────────────────┐
    │    │                    │
    ▼    ▼                    ▼
- SQLite Beads (Dolt)    Sandcastle SDK
- runs.db  task graph    ──────────────
+ SQLite (runs.db)       Sandcastle SDK
+ tasks, memories,       ──────────────
+ runs, events
                         Docker sandbox
                         (Claude Code)
                               │
@@ -29,11 +30,11 @@ Browser UI (Vite + React)
 
 | Component | What it does |
 |-----------|-------------|
-| `server/` | Hono API server — projects, sessions, runs, SSE streaming, Beads proxy |
+| `server/` | Hono API server — projects, sessions, runs, SSE streaming, task/memory API |
 | `ui/` | React SPA — chat, task board (kanban), run history, spec viewer |
-| `sandcastle/` | Docker image for the agent sandbox (Claude Code + `bd` + `spawn-worker`) |
+| `sandcastle/` | Docker image for the agent sandbox (Claude Code + `spawn-worker`) |
 | `prompts/` | Orchestrator and worker system prompts |
-| Dolt | MySQL-compatible SQL server used as the Beads task-graph store |
+| SQLite (`runs.db`) | Persistent store for runs, tasks, memories, events, and sessions |
 | LiteLLM | Model proxy — provides `boss-man/high|medium|low` tier aliases |
 | Langfuse | Optional LLM observability (traces, token costs) |
 
@@ -44,7 +45,6 @@ Browser UI (Vite + React)
 - **Node.js 22+** (use `nvm install 22`)
 - **Docker + Docker Compose v2**
 - **git**
-- **[Beads CLI (`bd`)](https://github.com/gastownhall/beads)** — task graph
 - API keys: `ANTHROPIC_API_KEY` (required), `OPENAI_API_KEY` (optional)
 
 ---
@@ -61,7 +61,6 @@ This one-shot script:
 3. Runs `npm install` for all workspaces
 4. Builds the agent sandbox Docker image (`boss-man:sandbox`)
 5. Runs a smoke test on the sandbox image
-6. Starts Dolt and initializes the Beads workspace
 
 Edit `.env` after generation to set any keys that weren't auto-detected.
 
@@ -74,7 +73,7 @@ Edit `.env` after generation to set any keys that weren't auto-detected.
 Starts the full dashboard. Detects whether LiteLLM is already running at `:4000` (e.g. from a sibling project like ao-briefcase) and reuses it if so, otherwise starts the standalone Docker Compose stack.
 
 **What it starts:**
-- Docker services: Dolt (`:3306`), Langfuse (`:3002`), and LiteLLM (`:4000`) if not already running
+- Docker services: Langfuse (`:3002`), and LiteLLM (`:4000`) if not already running
 - API server via `tsx watch` at `:3001`
 - Vite dev server (UI) at `:5173`
 
@@ -87,12 +86,12 @@ Stops the dev servers (API + UI). Accepts optional flags:
 ```bash
 ./stop.sh                    # stop dev servers only
 ./stop.sh --clean-containers # also remove any stale sandbox containers
-./stop.sh --infra            # also stop Docker Compose services (Dolt, LiteLLM, Langfuse)
+./stop.sh --infra            # also stop Docker Compose services (LiteLLM, Langfuse)
 ```
 
 ### `./install.sh`
 
-One-shot setup. Safe to re-run — skips already-completed steps (existing `.env`, installed `bd`, built sandbox image, initialized Beads workspace).
+One-shot setup. Safe to re-run — skips already-completed steps (existing `.env`, built sandbox image).
 
 ---
 
@@ -106,8 +105,6 @@ All configuration lives in `.env` (generated from `.env.example` by `install.sh`
 | `CLAUDE_CODE_OAUTH_TOKEN` | Optional — use Anthropic OAuth token instead of API key inside the sandbox |
 | `LITELLM_MASTER_KEY` | LiteLLM admin key (auto-generated) |
 | `LITELLM_API_KEY` | LiteLLM virtual key (auto-generated, same value as master) |
-| `DOLT_ROOT_PASSWORD` | Dolt SQL server root password (auto-generated) |
-| `BEADS_STORE_PASSWORD` | Password `bd` uses to connect to Dolt (same as `DOLT_ROOT_PASSWORD`) |
 | `LANGFUSE_SECRET_KEY` / `LANGFUSE_PUBLIC_KEY` | Langfuse API keys (auto-generated) |
 | `SANDBOX_IMAGE` | Docker image name for the agent sandbox (default: `boss-man:sandbox`) |
 | `SERVER_PORT` | API server port (default: `3001`) |
@@ -185,7 +182,7 @@ boss-man-dashboard/
 │       ├── api.ts       # Typed API client functions
 │       └── types.ts     # Shared TypeScript types
 ├── sandcastle/
-│   └── Dockerfile       # Agent sandbox image (Claude Code + bd + spawn-worker)
+│   └── Dockerfile       # Agent sandbox image (Claude Code + spawn-worker)
 ├── prompts/
 │   ├── orchestrator.md  # 8-topic discovery system prompt
 │   └── workers/         # Per-role worker prompts
@@ -195,7 +192,7 @@ boss-man-dashboard/
 │   ├── runs.db          # SQLite — projects, sessions, runs, events
 │   ├── logs/            # Per-run raw log files
 │   └── claude-sessions/ # Persisted Claude Code session caches (per project)
-├── docker-compose.yml   # Dolt, Langfuse, standalone LiteLLM + Postgres
+├── docker-compose.yml   # Langfuse, standalone LiteLLM + Postgres
 ├── litellm-config.yaml  # Model aliases and routing config
 ├── callbacks.py         # LiteLLM callback for OpenAI Responses API compat
 ├── install.sh           # One-shot setup
@@ -216,7 +213,6 @@ docker build -t boss-man:sandbox -f sandcastle/Dockerfile .
 
 `install.sh` does this automatically. The image includes:
 - Claude Code CLI (`@anthropic-ai/claude-code`)
-- Beads CLI (`bd`)
 - PrismoDev (`getprismo`)
 - `spawn-worker` script
 - System-level git config (works for any user ID Sandcastle injects)
@@ -225,10 +221,10 @@ Sandcastle runs containers as the **host user's UID/GID**, mounts the git worktr
 
 ---
 
-## Beads Task Tracking
+## Task Tracking
 
-[Beads](https://github.com/gastownhall/beads) is a structured task-graph CLI backed by Dolt. The orchestrator uses it to create, track, and complete tasks.
+Tasks, dependencies, and memories are stored in `runs.db` (the same SQLite database used for runs and events). No external service is required.
 
-The API server exposes a Beads proxy at `/api/beads/*` so the orchestrator can manage tasks from inside the Docker sandbox via HTTP rather than needing direct Dolt access.
+The orchestrator manages tasks through MCP tools (`beads_create_task`, `beads_add_dependency`, `beads_list_unblocked`, etc.) backed directly by SQLite. The API server exposes the same operations at `/api/beads/*` for the UI task board.
 
-Ensure Dolt is running before the first session (`docker compose up -d dolt`). `install.sh` initializes the workspace automatically.
+The `beads_*` tool names are preserved for compatibility with the orchestrator prompt — they refer to the SQLite-backed implementation, not the `bd` CLI.
