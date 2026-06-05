@@ -87,7 +87,7 @@ Goal: the web UI should expose the full useful experience of a Docker-contained 
 - [ ] **Structured agent event model**: expand persisted/SSE events beyond text and tool-call starts to include `assistant_text_delta`, `tool_call_started`, `tool_stdout`, `tool_stderr`, `tool_result`, `file_changed`, `diff_available`, `approval_requested`, `run_status_changed`, `error`, and `done`. *(blocked: Sandcastle only emits `text` and `toolCall` events)*
 - [x] **Tool activity UI**: render expandable tool-call rows in Chat and Runs with command and args; click to expand full text.
 - [x] **Diff/file-change surfacing**: detect changed files after each run via `git diff --name-only`; store in `runs.changed_files`; render file list in run detail panel.
-- [ ] **Approval flow**: support agent approval requests as first-class UI events, with approve/deny actions routed through the API instead of requiring terminal access. *(blocked: SKIP_PERMISSIONS bypasses approval in sandbox)*
+- ~~**Approval flow**~~ — dropped; Docker sandbox with limited host mounts is the security boundary; SKIP_PERMISSIONS bypasses approval anyway.
 - [x] **Attach terminal debug action**: debug panel with `docker ps` and `docker exec` commands shown for active runs in the Runs tab.
 - [x] **Transcript retention policy**: `DELETE /api/sessions/:id` cascade-deletes all runs and events; delete session button (with confirm) added to chat sidebar.
 - [x] **Worker links in orchestrator transcript**: parse `spawn-worker --role` from Bash toolCall events; render linked chips to the matching worker run.
@@ -104,7 +104,7 @@ Goal: the web UI should expose the full useful experience of a Docker-contained 
 - [x] **Token budget display**: cumulative input/output/cache tokens shown per session in the chat view (computed from runs already in `sessionQuery.data`)
 - [x] **prismo doctor on session start**: already present in orchestrator startup section (step 4)
 - ~~**Orchestrator tool restrictions**~~ — moved to Phase 8 (SDK-blocked).
-- [ ] **Langfuse trace linking**: capture `x-langfuse-trace-id` response header from LiteLLM and store in `runs.langfuse_trace_id`. Surface in UI run detail. Complex — traces are created inside the sandbox by Claude Code's LiteLLM calls; no direct header access from the runner.
+- ~~**Langfuse trace linking**~~ — dropped; traces are created inside the sandbox by Claude Code's LiteLLM calls with no way to capture the response header from the runner. Blocked on SDK-level access.
 
 ---
 
