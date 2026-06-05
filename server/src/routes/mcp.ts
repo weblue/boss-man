@@ -2,33 +2,28 @@
  * MCP (Model Context Protocol) server — Streamable HTTP transport.
  * Implements JSON-RPC 2.0 over POST /mcp.
  * No SDK dependency; protocol is implemented directly.
+ *
+ * Beads tools (beads_prime, beads_create_task, etc.) are backed by SQLite
+ * (runs.db) — no external Dolt container required.
+ *
+ * URL params:
+ *   ?sessionId=<uuid>   — orchestrator session for session_set_status / session_compact
+ *   ?projectId=<id>     — project scope for all beads_* tools
  */
 import { Hono } from 'hono';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { SERVER_PORT, BEADS_STORE_PASSWORD } from '../config.js';
+import { SERVER_PORT } from '../config.js';
+import {
+  addTaskDep,
+  closeTask,
+  generatePrimeContext,
+  insertMemory,
+  insertTask,
+  listUnblockedTasks,
+  randomTaskId,
+  updateTask,
+} from '../db.js';
 
-const execFileAsync = promisify(execFile);
 const router = new Hono();
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(__dirname, '..', '..', '..');
-
-// bd CLI env — same pattern as beads.ts
-const BD_ENV: Record<string, string> = {
-  BD_NON_INTERACTIVE: '1',
-  ...(BEADS_STORE_PASSWORD ? { BEADS_DOLT_PASSWORD: BEADS_STORE_PASSWORD } : {}),
-};
-
-async function bd(...args: string[]): Promise<string> {
-  const { stdout, stderr } = await execFileAsync('bd', args, {
-    cwd: REPO_ROOT,
-    timeout: 15_000,
-    env: { ...process.env, ...BD_ENV },
-  });
-  return [stdout, stderr].filter(Boolean).join('\n').trim();
-}
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -37,12 +32,12 @@ async function bd(...args: string[]): Promise<string> {
 const TOOLS = [
   {
     name: 'beads_prime',
-    description: 'Load Beads task state and memories. Call this at session startup.',
+    description: 'Load task state and memories for this project. Call this at session startup.',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'beads_create_task',
-    description: 'Create a new Beads task. Returns the task ID (bd-XXXX).',
+    description: 'Create a new task. Returns the task ID (bd-XXXX).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -66,7 +61,7 @@ const TOOLS = [
   },
   {
     name: 'beads_complete_task',
-    description: 'Mark a Beads task as complete (closed).',
+    description: 'Mark a task as complete (closed).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -82,7 +77,7 @@ const TOOLS = [
   },
   {
     name: 'beads_remember',
-    description: 'Store a persistent memory note in Beads.',
+    description: 'Store a persistent memory note for this project.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -148,44 +143,53 @@ async function callTool(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   args: Record<string, any>,
   sessionId: string | undefined,
+  projectId: string,
 ): Promise<ToolResult> {
   try {
     switch (name) {
       case 'beads_prime': {
-        const output = await bd('prime');
-        return ok(output);
+        if (!projectId) return ok('No project context available (projectId missing).');
+        return ok(generatePrimeContext(projectId));
       }
 
       case 'beads_create_task': {
+        if (!projectId) return err('projectId missing from MCP URL');
         const { description, details } = args as { description: string; details?: string };
-        const bdArgs = ['create', description, ...(details ? ['--description', details] : [])];
-        const output = await bd(...bdArgs);
-        const match = output.match(/bd-[a-f0-9]+/);
-        const taskId = match?.[0] ?? '(unknown)';
-        return ok(`task_id: ${taskId}\n${output}`);
+        const id = randomTaskId();
+        insertTask({
+          id,
+          project_id: projectId,
+          title: description,
+          description: details ?? null,
+          status: 'open',
+          created_at: Date.now(),
+        });
+        return ok(`task_id: ${id}\nCreated task ${id}: ${description}`);
       }
 
       case 'beads_add_dependency': {
         const { child_id, parent_id } = args as { child_id: string; parent_id: string };
-        const output = await bd('dep', 'add', child_id, parent_id);
-        return ok(output);
+        addTaskDep(child_id, parent_id);
+        return ok(`Dependency added: ${child_id} blocked by ${parent_id}`);
       }
 
       case 'beads_complete_task': {
         const { task_id } = args as { task_id: string };
-        const output = await bd('close', task_id);
-        return ok(output);
+        closeTask(task_id);
+        return ok(`Closed task ${task_id}`);
       }
 
       case 'beads_list_unblocked': {
-        const output = await bd('ready', '--json');
-        return ok(output);
+        if (!projectId) return err('projectId missing from MCP URL');
+        const tasks = listUnblockedTasks(projectId);
+        return ok(JSON.stringify(tasks, null, 2));
       }
 
       case 'beads_remember': {
+        if (!projectId) return err('projectId missing from MCP URL');
         const { note } = args as { note: string };
-        const output = await bd('remember', note);
-        return ok(output);
+        insertMemory(projectId, note);
+        return ok(`Memory stored: ${note}`);
       }
 
       case 'beads_update_task': {
@@ -194,14 +198,8 @@ async function callTool(
           status?: string;
           claim?: boolean;
         };
-        const bdArgs = [
-          'update',
-          task_id,
-          ...(claim ? ['--claim'] : []),
-          ...(status ? ['--status', status] : []),
-        ];
-        const output = await bd(...bdArgs);
-        return ok(output);
+        updateTask(task_id, { status, claim });
+        return ok(`Updated task ${task_id}`);
       }
 
       case 'session_set_status': {
@@ -325,8 +323,10 @@ router.post('/mcp', async (c) => {
       if (!toolName) {
         return jsonRpcError(id, -32602, 'Invalid params: missing name');
       }
-      const sessionId = new URL(c.req.url).searchParams.get('sessionId') ?? undefined;
-      const result = await callTool(toolName, toolArgs, sessionId);
+      const url = new URL(c.req.url);
+      const sessionId = url.searchParams.get('sessionId') ?? undefined;
+      const projectId = url.searchParams.get('projectId') ?? '';
+      const result = await callTool(toolName, toolArgs, sessionId, projectId);
       return jsonRpcOk(id, result);
     }
 

@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { execFileSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { updateRun, getRun } from './db.js';
+import { updateRun, getRun, closeTask } from './db.js';
 import { pushEvent, cleanupRunStream } from './streaming.js';
 import {
   CLAUDE_CODE_AUTH_MODE,
@@ -29,37 +29,25 @@ import {
   resolveClaudeAuthProvider,
   resolveClaudeCodeModel,
   resolveTier,
-  BEADS_STORE_PASSWORD,
 } from './config.js';
 
 const execFileAsync = promisify(execFile);
 
-const BD_ENV: Record<string, string> = {
-  BD_NON_INTERACTIVE: '1',
-  ...(BEADS_STORE_PASSWORD ? { BEADS_DOLT_PASSWORD: BEADS_STORE_PASSWORD } : {}),
-};
-
 /**
- * Auto-close a Beads task when its associated run completes successfully.
- * The orchestrator is supposed to call POST /api/beads/complete itself, but
+ * Auto-close a task when its associated run completes successfully.
+ * The orchestrator is supposed to call beads_complete_task itself, but
  * sometimes it forgets (crash, compaction, orphaned turn). This is the safety net.
- * Fire-and-forget — we log but never throw.
+ * Fire-and-forget — synchronous SQLite write, logged on error.
  */
-async function autoCloseBeadsTask(runId: string): Promise<void> {
+function autoCloseBeadsTask(runId: string): void {
   const run = getRun(runId);
   if (!run?.beads_task_id) return;
   try {
-    await execFileAsync('bd', ['close', run.beads_task_id], {
-      timeout: 10_000,
-      env: { ...process.env, ...BD_ENV },
-    });
-    console.log(`[runner] auto-closed beads task ${run.beads_task_id} for run ${runId}`);
+    closeTask(run.beads_task_id);
+    console.log(`[runner] auto-closed task ${run.beads_task_id} for run ${runId}`);
   } catch (err) {
-    // Task may already be closed — that's fine. Just log.
     const msg = err instanceof Error ? err.message : String(err);
-    if (!msg.includes('already closed') && !msg.includes('not found')) {
-      console.warn(`[runner] beads auto-close failed for ${run.beads_task_id}: ${msg}`);
-    }
+    console.warn(`[runner] task auto-close failed for ${run.beads_task_id}: ${msg}`);
   }
 }
 
@@ -249,7 +237,7 @@ export async function startRun(options: StartRunOptions): Promise<void> {
   //   - sessionId is the orchestrator session for this run (empty for worker runs, which
   //     still get the beads tools but don't need session_set_status / session_compact)
   const sessionId = options.orchestratorSessionId ?? '';
-  const mcpUrl = `${CONTAINER_ENV.BOSS_MAN_API_URL}/mcp?sessionId=${sessionId}`;
+  const mcpUrl = `${CONTAINER_ENV.BOSS_MAN_API_URL}/mcp?sessionId=${sessionId}&projectId=${encodeURIComponent(options.projectId)}`;
 
   // Build the agent-type-specific hook command that writes the MCP config file inside
   // the container workspace. Using printf with a format string sidesteps any quoting
@@ -365,9 +353,9 @@ export async function startRun(options: StartRunOptions): Promise<void> {
       changed_files: changedFiles.length > 0 ? JSON.stringify(changedFiles) : null,
     });
 
-    // Auto-close the associated Beads task if the run was linked to one.
-    // Safety net for when the orchestrator forgets to call /api/beads/complete.
-    autoCloseBeadsTask(options.id).catch(() => { /* already logged inside */ });
+    // Auto-close the associated task if the run was linked to one.
+    // Safety net for when the orchestrator forgets to call beads_complete_task.
+    autoCloseBeadsTask(options.id);
 
     pushEvent(options.id, { type: 'done', timestamp: new Date().toISOString() });
   } catch (err: unknown) {

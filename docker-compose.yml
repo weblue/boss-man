@@ -45,19 +45,6 @@ services:
       retries: 5
     profiles: ["standalone"]
 
-  # ── Dolt (Beads backend) — always started ────────────────────────────────────
-  dolt:
-    image: dolthub/dolt-sql-server:latest
-    restart: unless-stopped
-    ports:
-      - "${DOLT_PORT:-3306}:3306"
-    volumes:
-      - dolt_data:/var/lib/dolt
-    environment:
-      DOLT_ROOT_PASSWORD: "${DOLT_ROOT_PASSWORD}"
-      # Allow TCP connections from any host (not just socket/localhost)
-      DOLT_ROOT_HOST: "%"
-
   # ── Langfuse — on :3002 to avoid collision with mr-robot's :3000 ─────────────
   langfuse-web:
     image: langfuse/langfuse:2
@@ -102,5 +89,4 @@ services:
 
 volumes:
   postgres_data:
-  dolt_data:
   langfuse_db_data:

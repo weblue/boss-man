@@ -60,10 +60,6 @@ export const LANGFUSE_SECRET_KEY = process.env.LANGFUSE_SECRET_KEY ?? '';
 export const LANGFUSE_PUBLIC_KEY = process.env.LANGFUSE_PUBLIC_KEY ?? '';
 export const LANGFUSE_HOST = process.env.LANGFUSE_HOST ?? 'http://localhost:3000';
 
-export const BEADS_STORE_HOST = process.env.BEADS_STORE_HOST ?? '127.0.0.1';
-export const BEADS_STORE_PORT = process.env.BEADS_STORE_PORT ?? '3306';
-export const BEADS_STORE_PASSWORD = process.env.BEADS_STORE_PASSWORD ?? '';
-
 // Model tier → LiteLLM alias mapping
 export const MODEL_TIERS = {
   high: 'boss-man/high',

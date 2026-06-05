@@ -927,8 +927,8 @@ function taskGroup(task: BeadsTask): 'open' | 'in-progress' | 'done' {
 
 function TasksTab({ project }: { project: Project }) {
   const tasksQuery = useQuery({
-    queryKey: ['tasks'],
-    queryFn: listTasks,
+    queryKey: ['tasks', project.id],
+    queryFn: () => listTasks(project.id),
     refetchInterval: 10000,
   });
 
@@ -955,17 +955,12 @@ function TasksTab({ project }: { project: Project }) {
       'in-progress': [],
       done: [],
     };
-    if (Array.isArray(tasksQuery.data)) {
-      for (const task of tasksQuery.data) groups[taskGroup(task)].push(task);
-    }
+    for (const task of tasksQuery.data ?? []) groups[taskGroup(task)].push(task);
     return groups;
   }, [tasksQuery.data]);
 
   if (tasksQuery.isLoading) return <div className="p-4 text-text-muted"><Loader2 className="animate-spin" size={18} /></div>;
   if (tasksQuery.error) return <div className="p-4 text-xs text-red">{tasksQuery.error.message}</div>;
-  if (typeof tasksQuery.data === 'string') {
-    return <pre className="h-full overflow-auto bg-base p-4 text-xs text-text-primary">{tasksQuery.data}</pre>;
-  }
 
   return (
     <div className="grid h-full grid-cols-3 gap-px bg-border">
@@ -1413,7 +1408,7 @@ function RunsTab({ project }: { project: Project }) {
                   })
                 : <div className="text-text-muted">{selectedRun.error ?? 'No live events captured for this run.'}</div>}
               {/* Always surface the error when present, even if partial events were captured */}
-              {selectedRun.error && selectedRun.status === 'failed' && (events?.length ?? 0) > 0 && (
+              {selectedRun.error && selectedRun.status === 'failed' && logEvents.length > 0 && (
                 <div className="mt-2 rounded border border-red/20 bg-red/5 px-2 py-1.5 text-[11px] text-red">
                   <span className="font-medium">Run failed: </span>{selectedRun.error}
                 </div>

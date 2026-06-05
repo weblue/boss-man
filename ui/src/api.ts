@@ -171,12 +171,10 @@ export async function patchSession(
   );
 }
 
-export async function listTasks(): Promise<BeadsTask[] | string> {
-  const res = await fetch('/api/beads/tasks');
-  if (!res.ok) throw new Error(`${res.status}: ${await parseError(res)}`);
-  const contentType = res.headers.get('content-type') ?? '';
-  if (contentType.includes('application/json')) return res.json() as Promise<BeadsTask[]>;
-  return res.text();
+export async function listTasks(projectId: string): Promise<BeadsTask[]> {
+  return json<BeadsTask[]>(
+    await fetch(`/api/beads/tasks?projectId=${encodeURIComponent(projectId)}`),
+  );
 }
 
 export async function listModels(): Promise<string[]> {

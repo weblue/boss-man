@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { randomBytes } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync } from 'node:fs';
@@ -64,6 +65,30 @@ db.exec(`
     type TEXT NOT NULL,
     data TEXT NOT NULL,
     timestamp TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    claimed_by TEXT,
+    created_at INTEGER NOT NULL,
+    closed_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS task_deps (
+    child_id TEXT NOT NULL,
+    parent_id TEXT NOT NULL,
+    PRIMARY KEY (child_id, parent_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    note TEXT NOT NULL,
+    created_at INTEGER NOT NULL
   );
 `);
 
@@ -301,6 +326,145 @@ export function deleteSession(id: string): void {
   _deleteSessionTransaction(id);
 }
 
+// ── Tasks ─────────────────────────────────────────────────────────────────────
+
+export interface Task {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string | null;
+  status: string; // open | in_progress | closed
+  claimed_by: string | null;
+  created_at: number;
+  closed_at: number | null;
+}
+
+export interface Memory {
+  id: number;
+  project_id: string;
+  note: string;
+  created_at: number;
+}
+
+export function randomTaskId(): string {
+  return 'bd-' + randomBytes(4).toString('hex');
+}
+
+const _insertTask = db.prepare(`
+  INSERT INTO tasks (id, project_id, title, description, status, created_at)
+  VALUES (@id, @project_id, @title, @description, @status, @created_at)
+`);
+export function insertTask(t: Omit<Task, 'claimed_by' | 'closed_at'>): void {
+  _insertTask.run(t);
+}
+
+const _getTask = db.prepare<[string], Task>('SELECT * FROM tasks WHERE id = ?');
+export function getTask(id: string): Task | undefined { return _getTask.get(id); }
+
+const _listAllTasks = db.prepare<[string], Task>(
+  'SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at ASC',
+);
+export function listAllTasks(projectId: string): Task[] { return _listAllTasks.all(projectId); }
+
+const _listUnblockedTasks = db.prepare<[string], Task>(`
+  SELECT t.* FROM tasks t
+  WHERE t.project_id = ? AND t.status IN ('open', 'in_progress')
+    AND NOT EXISTS (
+      SELECT 1 FROM task_deps d
+      JOIN tasks p ON p.id = d.parent_id
+      WHERE d.child_id = t.id AND p.status != 'closed'
+    )
+  ORDER BY t.created_at ASC
+`);
+export function listUnblockedTasks(projectId: string): Task[] {
+  return _listUnblockedTasks.all(projectId);
+}
+
+const _insertDep = db.prepare(
+  'INSERT OR IGNORE INTO task_deps (child_id, parent_id) VALUES (@child_id, @parent_id)',
+);
+export function addTaskDep(childId: string, parentId: string): void {
+  _insertDep.run({ child_id: childId, parent_id: parentId });
+}
+
+const _getTaskParents = db.prepare<[string], { parent_id: string }>(
+  'SELECT parent_id FROM task_deps WHERE child_id = ?',
+);
+export function getTaskParents(taskId: string): string[] {
+  return _getTaskParents.all(taskId).map((r) => r.parent_id);
+}
+
+const _closeTask = db.prepare(
+  "UPDATE tasks SET status = 'closed', closed_at = ? WHERE id = ?",
+);
+export function closeTask(id: string): void {
+  _closeTask.run(Date.now(), id);
+}
+
+const _updateTask = db.prepare(
+  'UPDATE tasks SET status = COALESCE(?, status), claimed_by = COALESCE(?, claimed_by) WHERE id = ?',
+);
+export function updateTask(id: string, opts: { status?: string; claim?: boolean }): void {
+  const newStatus = opts.claim ? 'in_progress' : (opts.status ?? null);
+  const claimedBy = opts.claim ? 'orchestrator' : null;
+  _updateTask.run(newStatus, claimedBy, id);
+}
+
+// ── Memories ──────────────────────────────────────────────────────────────────
+
+const _insertMemory = db.prepare(
+  'INSERT INTO memories (project_id, note, created_at) VALUES (@project_id, @note, @created_at)',
+);
+export function insertMemory(projectId: string, note: string): void {
+  _insertMemory.run({ project_id: projectId, note, created_at: Date.now() });
+}
+
+const _listMemories = db.prepare<[string], Memory>(
+  'SELECT * FROM memories WHERE project_id = ? ORDER BY created_at ASC',
+);
+export function listMemories(projectId: string): Memory[] { return _listMemories.all(projectId); }
+
+// ── Task context prime ────────────────────────────────────────────────────────
+
+export function generatePrimeContext(projectId: string): string {
+  const tasks = listAllTasks(projectId);
+  const mems = listMemories(projectId);
+
+  if (tasks.length === 0 && mems.length === 0) {
+    return '## Task State\n\nNo tasks or memories yet.\n';
+  }
+
+  const lines: string[] = ['## Task State\n'];
+
+  const openTasks = tasks.filter((t) => t.status !== 'closed');
+  if (openTasks.length > 0) {
+    lines.push('### Open / In-Progress Tasks\n');
+    lines.push('| ID | Title | Status | Blocked By |');
+    lines.push('|----|-------|--------|------------|');
+    for (const task of openTasks) {
+      const parents = getTaskParents(task.id);
+      const blockedBy = parents.length > 0 ? parents.join(', ') : '—';
+      lines.push(`| ${task.id} | ${task.title} | ${task.status} | ${blockedBy} |`);
+    }
+    lines.push('');
+  }
+
+  const closedTasks = tasks.filter((t) => t.status === 'closed');
+  if (closedTasks.length > 0) {
+    lines.push(`### Completed Tasks (${closedTasks.length})\n`);
+    lines.push(closedTasks.map((t) => `- [x] ${t.id} — ${t.title}`).join('\n'));
+    lines.push('');
+  }
+
+  if (mems.length > 0) {
+    lines.push('### Memories\n');
+    for (const mem of mems) lines.push(`- ${mem.note}`);
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
 // ── Project deletion ───────────────────────────────────────────────────────────
 
 const _deleteEventsByProject = db.prepare(
@@ -309,11 +473,19 @@ const _deleteEventsByProject = db.prepare(
 const _deleteRunsByProject = db.prepare('DELETE FROM runs WHERE project_id = ?');
 const _deleteSessionsByProject = db.prepare('DELETE FROM orchestrator_sessions WHERE project_id = ?');
 const _deleteProjectById = db.prepare('DELETE FROM projects WHERE id = ?');
+const _deleteTaskDepsByProject = db.prepare(
+  'DELETE FROM task_deps WHERE child_id IN (SELECT id FROM tasks WHERE project_id = ?)',
+);
+const _deleteTasksByProject = db.prepare('DELETE FROM tasks WHERE project_id = ?');
+const _deleteMemoriesByProject = db.prepare('DELETE FROM memories WHERE project_id = ?');
 
 const _deleteProjectTransaction = db.transaction((projectId: string) => {
   _deleteEventsByProject.run(projectId);
   _deleteRunsByProject.run(projectId);
   _deleteSessionsByProject.run(projectId);
+  _deleteTaskDepsByProject.run(projectId);
+  _deleteTasksByProject.run(projectId);
+  _deleteMemoriesByProject.run(projectId);
   _deleteProjectById.run(projectId);
 });
 export function deleteProject(id: string): void {

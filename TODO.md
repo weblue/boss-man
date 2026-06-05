@@ -120,8 +120,8 @@ Goal: the web UI should expose the full useful experience of a Docker-contained 
 
 ### Phase 7 — Multi-Project & Auth
 
-- [ ] Per-project Beads database (`beads_db` field already in projects table; wire `bd --database` flag)
-- [ ] `GET /api/beads/tasks?db=projectName` — scoped task list per project
+- [x] Per-project task database — replaced Beads/Dolt with SQLite tables in `runs.db`; all task/memory queries are project-scoped by `project_id`
+- [x] `GET /api/beads/tasks?projectId=<id>` — scoped task list per project
 - [ ] Session auth (simple API key gate on all `/api/*` routes) for network exposure
 - [x] **Project deletion**: `DELETE /api/projects/:id` cascade-deletes all sessions, runs, and events (repo on disk is preserved); blocked by active runs (409); trash icon on sidebar project items (hover-reveal, confirm dialog, navigates away if active project).
 - [ ] **CORS** — restrict `Access-Control-Allow-Origin` to localhost origins only (security hardening; low priority for trusted-network deployments but required before any network exposure)

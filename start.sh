@@ -302,15 +302,8 @@ if [[ "$STANDALONE" == "true" ]]; then
   done
   ok "LiteLLM ready at :${LITELLM_PORT}"
 else
-  docker compose up -d dolt langfuse-web langfuse-db
+  docker compose up -d langfuse-web langfuse-db
 fi
-
-# Wait for Dolt
-for i in $(seq 1 20); do
-  docker compose ps dolt 2>/dev/null | grep -qi "running" && break
-  sleep 2
-done
-ok "Dolt ready at :${DOLT_PORT}"
 
 # Langfuse health check (non-fatal)
 if curl -sf "http://localhost:${LANGFUSE_PORT}/api/public/health" >/dev/null 2>&1; then
@@ -374,7 +367,6 @@ printf "║  API:      http://localhost:%-26s║\n" "${SERVER_PORT}"
 printf "║  UI:       http://localhost:%-26s║\n" "5173"
 printf "║  LiteLLM:  http://localhost:%-4s (%s)%-$((15 - ${#LITELLM_SOURCE}))s║\n" "${LITELLM_PORT}" "${LITELLM_SOURCE}" ""
 printf "║  Langfuse: http://localhost:%-26s║\n" "${LANGFUSE_PORT}"
-printf "║  Dolt:     localhost:%-33s║\n" "${DOLT_PORT}"
 echo "║                                                      ║"
 printf "║  Mode:     %-42s║\n" "$MODE_DESC"
 printf "║  Profile:  %-42s║\n" "$PROFILE_DESC"
