@@ -4,7 +4,10 @@
   "engines": {
     "node": ">=22 <25"
   },
-  "workspaces": ["server", "ui"],
+  "workspaces": [
+    "server",
+    "ui"
+  ],
   "scripts": {
     "dev": "npm run dev --workspace=server",
     "typecheck": "npm run typecheck --workspaces --if-present",
@@ -14,7 +17,7 @@
     "stop": "./stop.sh"
   },
   "devDependencies": {
-    "@ai-hero/sandcastle": "latest",
-    "tsx": "^4.0.0"
+    "@ai-hero/sandcastle": "^0.7.0",
+    "tsx": "^4.22.4"
   }
 }

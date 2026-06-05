@@ -10,6 +10,7 @@ import {
   type OrchestratorSession,
 } from '../db.js';
 import { startRun } from '../runner.js';
+import { validateResumeSession } from '../session-utils.js';
 import { getPersistedEvents, subscribe, type AgentEvent } from '../streaming.js';
 import {
   BOSS_MAN_AUTH_MODE,
@@ -55,10 +56,16 @@ interface SessionRuntime {
   model: string;
 }
 
-function loadOrchestratorPrompt(): string {
+// Memoized at module load — the orchestrator prompt is static for the lifetime
+// of the process and is called on every session start and compact turn.
+const _orchestratorPrompt: string = (() => {
   const path = join(PROMPTS_DIR, 'orchestrator.md');
   if (!existsSync(path)) return '';
   return readFileSync(path, 'utf8').trimEnd();
+})();
+
+function loadOrchestratorPrompt(): string {
+  return _orchestratorPrompt;
 }
 
 function buildFirstTurnPrompt(userMessage: string): string {
@@ -257,8 +264,20 @@ router.post('/api/sessions/:id/reply', async (c) => {
     // We scan all runs (not just current_run_id) so a cancelled or failed turn doesn't
     // break resumption — we fall back to the last stable completed-iteration snapshot.
     const allSessionRuns = listSessionRuns(session.id);
-    const resumeSessionId =
-      [...allSessionRuns].reverse().find((r) => r.last_session_id != null)?.last_session_id ?? undefined;
+    const lastRunWithSession = [...allSessionRuns].reverse().find((r) => r.last_session_id != null);
+    const rawResumeSessionId = lastRunWithSession?.last_session_id ?? undefined;
+
+    // Validate that the session file still exists before passing to sandcastle.
+    // Stale IDs (from deleted data, migrated projects, or failed captures) become
+    // graceful fresh starts rather than cryptic resume errors.
+    const resumeSessionId = rawResumeSessionId
+      ? (await validateResumeSession(
+          rawResumeSessionId,
+          session.project_id,
+          lastRunWithSession!.agent_provider,
+          lastRunWithSession!.claude_auth_provider,
+        )) ?? undefined
+      : undefined;
 
     // Context-length guard: if accumulated cache tokens across all runs in this session
     // exceed the threshold, prepend a notice instructing the orchestrator to write a

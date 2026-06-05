@@ -558,7 +558,12 @@ function ChatTab({ project }: { project: Project }) {
     },
   });
 
-  const canReply = !!selectedSessionId && !!currentRun && isTerminal(currentRun.status);
+  // Only allow reply when the run completed cleanly or was cancelled by the user.
+  // Failed runs are excluded: the user sees an error notice and must acknowledge
+  // it before sending a new message (which will start fresh or resume from the
+  // last successful turn depending on available session state).
+  const canReply = !!selectedSessionId && !!currentRun &&
+    (currentRun.status === 'completed' || currentRun.status === 'cancelled');
   const transcript = transcriptQuery.data ?? (sessionQuery.data?.runs ?? []).map((run) => ({ run, events: [] }));
 
   const submitNewSession = (event: FormEvent) => {
@@ -857,11 +862,27 @@ function ChatTab({ project }: { project: Project }) {
               </button>
             )}
           </div>
+          {/* Failed-run notice — shown instead of the reply form when the last run errored */}
+          {currentRun?.status === 'failed' && (
+            <div className="border-b border-red/20 bg-red/5 px-3 py-2">
+              <p className="mb-1 text-xs font-medium text-red">Run failed</p>
+              <p className="text-[11px] text-text-muted leading-relaxed">
+                {currentRun.error ?? 'The run ended with an error.'}
+              </p>
+              <button
+                className="mt-2 rounded border border-red/30 bg-red/10 px-2 py-0.5 text-[10px] text-red hover:bg-red/20"
+                onClick={() => replyMutation.mutate({ message: draft.trim() || 'Please retry.', model: orchestratorModel })}
+                disabled={replyMutation.isPending}
+              >
+                Retry
+              </button>
+            </div>
+          )}
           {/* Reply input */}
           <form className="flex gap-2 p-3" onSubmit={submitReply}>
             <textarea
               className="field min-h-12 resize-none"
-              placeholder={canReply ? 'Reply… (Enter to send, Shift+Enter for newline)' : 'Waiting for the current turn...'}
+              placeholder={canReply ? 'Reply… (Enter to send, Shift+Enter for newline)' : currentRun?.status === 'failed' ? 'Run failed — use Retry above or fix the error first.' : 'Waiting for the current turn...'}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={handleReplyKeyDown}
@@ -1391,6 +1412,12 @@ function RunsTab({ project }: { project: Project }) {
                     );
                   })
                 : <div className="text-text-muted">{selectedRun.error ?? 'No live events captured for this run.'}</div>}
+              {/* Always surface the error when present, even if partial events were captured */}
+              {selectedRun.error && selectedRun.status === 'failed' && (events?.length ?? 0) > 0 && (
+                <div className="mt-2 rounded border border-red/20 bg-red/5 px-2 py-1.5 text-[11px] text-red">
+                  <span className="font-medium">Run failed: </span>{selectedRun.error}
+                </div>
+              )}
             </div>
             {selectedRun.changed_files && (() => {
               let files: string[];

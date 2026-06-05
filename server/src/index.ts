@@ -16,7 +16,11 @@ const app = new Hono();
 
 markInterruptedRuns();
 
-app.use('*', cors({ origin: '*' }));
+// Restrict CORS to localhost origins only — required before any network exposure.
+const ALLOWED_ORIGINS = /^https?:\/\/localhost(:\d+)?$/;
+app.use('*', cors({
+  origin: (origin) => ALLOWED_ORIGINS.test(origin ?? '') ? origin : null,
+}));
 app.use('*', logger());
 
 app.get('/health', (c) => c.json({ ok: true, ts: Date.now() }));

@@ -294,6 +294,9 @@ export async function startRun(options: StartRunOptions): Promise<void> {
       resumeSession: options.resumeSessionId,
       signal: abortController.signal,
       completionSignal: '<task-complete/>',
+      // Grace window after the completion signal fires. Prevents zombie runs where
+      // a spawned child (MCP server, git, gh) keeps stdout open after the agent exits.
+      completionTimeoutSeconds: 90,
       hooks: {
         sandbox: {
           onSandboxReady: [
