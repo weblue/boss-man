@@ -235,9 +235,11 @@ Spawn a reviewer. A non-zero exit means the run crashed or was cancelled — not
 
 ```bash
 # reviewer → high
-REVIEWER_RUN=$(spawn-worker --wait --role reviewer --model high \
-  --prompt "Review all changes against /workspace/.spec/spec.md") || \
-  echo "Reviewer run failed or was cancelled — proceeding to completion."
+if ! spawn-worker --wait --role reviewer --model high \
+  --prompt "Review all changes against /workspace/.spec/spec.md"; then
+  echo "Reviewer run failed or was cancelled. Reply with instructions: retry the reviewer, fix a known issue first, or skip."
+  <task-complete/>
+fi
 ```
 
 If the reviewer completes (exit 0), summarise any issues it flagged. If there are blocking issues, spawn an implementer to address them and rerun the reviewer. When all clear, mark the session complete using the `session_set_status` tool:
