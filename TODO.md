@@ -41,6 +41,12 @@ Goal: replace static `boss-man/high|medium|low` tier aliases with intelligent ru
 
 ---
 
+### Phase 12 — Prompt Review
+
+- [ ] **Human review of all agent prompts** — review `prompts/orchestrator.md` and all `prompts/workers/*.md` for quality, safety, and alignment with actual task patterns. Check for ambiguous instructions, missing guardrails, and opportunities to tighten scope so workers don't overreach.
+
+---
+
 ### Phase 11 - auth/security
 
 - [ ] Session auth (simple API key gate on all `/api/*` routes) for network exposure

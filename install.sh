@@ -130,7 +130,6 @@ echo "── Building sandbox Docker image (boss-man:sandbox) ──"
 echo "   This installs Claude Code, prismo, and spawn-worker in the agent sandbox."
 
 docker build \
-  --build-arg "BEADS_VERSION=${BEADS_VERSION:-1.0.4}" \
   -t "${SANDBOX_IMAGE:-boss-man:sandbox}" \
   -f sandcastle/Dockerfile \
   .
@@ -141,7 +140,7 @@ SANDBOX_TEST_CONTAINER="boss-man-sandbox-smoke-$$"
 docker rm -f "$SANDBOX_TEST_CONTAINER" >/dev/null 2>&1 || true
 docker run -d --name "$SANDBOX_TEST_CONTAINER" "${SANDBOX_IMAGE:-boss-man:sandbox}" >/dev/null
 if ! docker exec "$SANDBOX_TEST_CONTAINER" sh -lc \
-  'test -w "$HOME" && git config --global --add safe.directory /home/agent/workspace && command -v bd && command -v claude && command -v spawn-worker' >/dev/null; then
+  'test -w "$HOME" && git config --global --add safe.directory /home/agent/workspace && command -v claude && command -v spawn-worker && command -v rtk && command -v codex && command -v pi' >/dev/null; then
   docker logs "$SANDBOX_TEST_CONTAINER" 2>/dev/null || true
   docker rm -f "$SANDBOX_TEST_CONTAINER" >/dev/null 2>&1 || true
   die "Sandbox image smoke test failed"

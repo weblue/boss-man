@@ -293,6 +293,12 @@ export async function startRun(options: StartRunOptions): Promise<void> {
             // dist/, .git, and other large irrelevant directories, saving significant
             // tokens on every run without any LLM cost.
             { command: 'npx getprismo doctor --quiet 2>/dev/null || true', timeoutMs: 30_000 },
+            // Install the RTK bash hook into ~/.claude/settings.json so that every
+            // Bash tool call is transparently rewritten (e.g. `git status` →
+            // `rtk git status`), saving 60-90% of tokens on dev commands.
+            // --hook-only: no RTK.md written to CLAUDE.md (zero extra context tokens).
+            // --auto-patch: non-interactive (no stdin prompt).
+            { command: 'rtk init -g --hook-only --auto-patch 2>/dev/null || true', timeoutMs: 10_000 },
             // Write the MCP config so the agent can reach the boss-man MCP server.
             // Orchestrator runs get a session-scoped URL; worker runs get an empty
             // sessionId but still have access to the beads tools.

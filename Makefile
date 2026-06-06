@@ -1,8 +1,5 @@
 .PHONY: sandbox sandbox-push install start stop typecheck help
 
-# Override on the command line to sync with the host bd version:
-#   make sandbox BEADS_VERSION=1.1.0
-BEADS_VERSION ?= 1.0.4
 SANDBOX_IMAGE  ?= boss-man:sandbox
 
 # ── Sandbox image ────────────────────────────────────────────────────────────
@@ -10,7 +7,6 @@ SANDBOX_IMAGE  ?= boss-man:sandbox
 ## sandbox   — Build the agent sandbox Docker image
 sandbox:
 	docker build \
-		--build-arg BEADS_VERSION=$(BEADS_VERSION) \
 		-t $(SANDBOX_IMAGE) \
 		-f sandcastle/Dockerfile \
 		.
