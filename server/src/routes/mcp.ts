@@ -1,14 +1,7 @@
 /**
- * MCP (Model Context Protocol) server — Streamable HTTP transport.
- * Implements JSON-RPC 2.0 over POST /mcp.
- * No SDK dependency; protocol is implemented directly.
- *
- * Beads tools (beads_prime, beads_create_task, etc.) are backed by SQLite
- * (runs.db) — no external Dolt container required.
- *
- * URL params:
- *   ?sessionId=<uuid>   — orchestrator session for session_set_status / session_compact
- *   ?projectId=<id>     — project scope for all beads_* tools
+ * MCP server — Streamable HTTP, JSON-RPC 2.0 over POST /mcp. No SDK; direct impl.
+ * Beads tools backed by SQLite (runs.db) — no Dolt container.
+ * URL params: ?sessionId=<uuid> (session_set_status / session_compact) · ?projectId=<id> (beads_* scope).
  */
 import { Hono } from 'hono';
 import { SERVER_PORT } from '../config.js';
@@ -138,6 +131,11 @@ function err(text: string): ToolResult {
   return { content: [{ type: 'text', text: `Error: ${text}` }], isError: true };
 }
 
+const BEADS_TOOLS = new Set([
+  'beads_prime', 'beads_create_task', 'beads_add_dependency',
+  'beads_complete_task', 'beads_list_unblocked', 'beads_remember', 'beads_update_task',
+]);
+
 async function callTool(
   name: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -145,16 +143,18 @@ async function callTool(
   sessionId: string | undefined,
   projectId: string,
 ): Promise<ToolResult> {
+  if (BEADS_TOOLS.has(name) && !projectId) return err('projectId missing from MCP URL');
+
   try {
     switch (name) {
       case 'beads_prime': {
-        if (!projectId) return ok('No project context available (projectId missing).');
         return ok(generatePrimeContext(projectId));
       }
 
       case 'beads_create_task': {
-        if (!projectId) return err('projectId missing from MCP URL');
-        const { description, details } = args as { description: string; details?: string };
+        const description = typeof args.description === 'string' ? args.description : null;
+        if (!description) return err('description is required');
+        const details = typeof args.details === 'string' ? args.details : undefined;
         const id = randomTaskId();
         insertTask({
           id,
@@ -168,44 +168,46 @@ async function callTool(
       }
 
       case 'beads_add_dependency': {
-        const { child_id, parent_id } = args as { child_id: string; parent_id: string };
-        addTaskDep(child_id, parent_id);
+        const child_id = typeof args.child_id === 'string' ? args.child_id : null;
+        const parent_id = typeof args.parent_id === 'string' ? args.parent_id : null;
+        if (!child_id || !parent_id) return err('child_id and parent_id are required');
+        addTaskDep(child_id, parent_id, projectId);
         return ok(`Dependency added: ${child_id} blocked by ${parent_id}`);
       }
 
       case 'beads_complete_task': {
-        const { task_id } = args as { task_id: string };
-        closeTask(task_id);
+        const task_id = typeof args.task_id === 'string' ? args.task_id : null;
+        if (!task_id) return err('task_id is required');
+        closeTask(task_id, projectId);
         return ok(`Closed task ${task_id}`);
       }
 
       case 'beads_list_unblocked': {
-        if (!projectId) return err('projectId missing from MCP URL');
         const tasks = listUnblockedTasks(projectId);
         return ok(JSON.stringify(tasks, null, 2));
       }
 
       case 'beads_remember': {
-        if (!projectId) return err('projectId missing from MCP URL');
-        const { note } = args as { note: string };
+        const note = typeof args.note === 'string' ? args.note : null;
+        if (!note) return err('note is required');
         insertMemory(projectId, note);
         return ok(`Memory stored: ${note}`);
       }
 
       case 'beads_update_task': {
-        const { task_id, status, claim } = args as {
-          task_id: string;
-          status?: string;
-          claim?: boolean;
-        };
-        updateTask(task_id, { status, claim });
+        const task_id = typeof args.task_id === 'string' ? args.task_id : null;
+        if (!task_id) return err('task_id is required');
+        const status = typeof args.status === 'string' ? args.status : undefined;
+        const claim = args.claim === true;
+        updateTask(task_id, { status, claim }, projectId);
         return ok(`Updated task ${task_id}`);
       }
 
       case 'session_set_status': {
         if (!sessionId) return err('no sessionId in URL');
         if (!/^[0-9a-f-]{36}$/.test(sessionId)) return err('invalid sessionId format');
-        const { status } = args as { status: string };
+        const status = typeof args.status === 'string' ? args.status : null;
+        if (!status) return err('status is required');
         const res = await fetch(`http://localhost:${SERVER_PORT}/api/sessions/${sessionId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -285,8 +287,7 @@ router.post('/mcp', async (c) => {
     return jsonRpcError(null, -32700, 'Parse error');
   }
 
-  // JSON-RPC 2.0 requires the request to be an object (not array, null, primitive).
-  // Arrays would be batch requests — not supported; null/primitives are invalid.
+  // Must be an object — arrays (batch) unsupported; null/primitives invalid.
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return jsonRpcError(null, -32600, 'Invalid Request');
   }
@@ -307,7 +308,6 @@ router.post('/mcp', async (c) => {
       });
 
     case 'notifications/initialized':
-      // Belt-and-suspenders: if someone sends this with an id, treat as notification
       return new Response(null, { status: 202 });
 
     case 'tools/list':

@@ -22,6 +22,7 @@ import {
   CLAUDE_CODE_OAUTH_TOKEN,
   type ClaudeAuthProvider,
   CONTAINER_ENV,
+  LITELLM_MASTER_KEY,
   SANDBOX_IMAGE,
   claudeAuthContainerEnv,
   PROMPTS_DIR,
@@ -34,16 +35,14 @@ import {
 const execFileAsync = promisify(execFile);
 
 /**
- * Auto-close a task when its associated run completes successfully.
- * The orchestrator is supposed to call beads_complete_task itself, but
- * sometimes it forgets (crash, compaction, orphaned turn). This is the safety net.
- * Fire-and-forget — synchronous SQLite write, logged on error.
+ * Auto-close a run's task on success. Safety net — orchestrator should call
+ * beads_complete_task but may forget (crash, compaction, orphaned turn).
  */
 function autoCloseBeadsTask(runId: string): void {
   const run = getRun(runId);
   if (!run?.beads_task_id) return;
   try {
-    closeTask(run.beads_task_id);
+    closeTask(run.beads_task_id, run.project_id);
     console.log(`[runner] auto-closed task ${run.beads_task_id} for run ${runId}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -116,9 +115,8 @@ function getSandbox(
   if (provider === 'docker') {
     const credMounts = claudeCredentialMounts(claudeAuthProvider);
 
-    // When not mounting the host ~/.claude (litellm backend, or anthropic with an
-    // explicit OAuth token), persist Claude Code's session cache to a per-project
-    // host directory so conversation sessions survive container and server restarts.
+    // No host ~/.claude mount (litellm, or anthropic + OAuth token) → persist the
+    // session cache to a per-project host dir so sessions survive restarts.
     const sessionMounts: typeof credMounts = [];
     if (credMounts.length === 0) {
       const sessionDir = join(SESSIONS_DIR, projectId);
@@ -164,6 +162,32 @@ function getAgentProvider(
   });
 }
 
+function getChangedFiles(repoPath: string, commits: { sha: string }[]): string[] {
+  if (commits.length === 0) return [];
+  const firstSha = commits[0].sha;
+  const lastSha = commits.at(-1)!.sha;
+  try {
+    const raw = execFileSync(
+      'git',
+      ['-C', repoPath, 'diff', '--name-only', `${firstSha}^`, lastSha],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    return raw.split('\n').filter(Boolean);
+  } catch {
+    // First commit has no parent — use diff-tree instead.
+    try {
+      const raw = execFileSync(
+        'git',
+        ['-C', repoPath, 'diff-tree', '--no-commit-id', '-r', '--name-only', lastSha],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+      );
+      return raw.split('\n').filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+}
+
 function sumUsage(iterations: readonly { usage?: IterationUsage }[]) {
   return iterations.reduce(
     (acc, iter) => {
@@ -180,9 +204,8 @@ function sumUsage(iterations: readonly { usage?: IterationUsage }[]) {
   );
 }
 
-/** Ensure the repo has at least one commit (HEAD must exist for Sandcastle's branchStrategy).
- *  Fresh dashboard-created projects start as empty git repos, so we create a baseline commit.
- *  Async so it doesn't block the Node event loop. */
+/** Ensure HEAD exists (required by Sandcastle's branchStrategy). Fresh projects
+ *  are empty repos → create a baseline commit. */
 export async function ensureRepoHasHead(repoPath: string): Promise<void> {
   try {
     await execFileAsync('git', ['-C', repoPath, 'rev-parse', '--verify', 'HEAD']);
@@ -232,20 +255,16 @@ export async function startRun(options: StartRunOptions): Promise<void> {
   const resolvedModel = resolveTier(options.model) || defaultModelForRole(options.role);
   const fullPrompt = buildPrompt(options.prompt, options.role);
 
-  // Build the MCP URL. Both parts are known at Node.js level:
-  //   - base URL comes from CONTAINER_ENV (the value already injected into containers)
-  //   - sessionId is the orchestrator session for this run (empty for worker runs, which
-  //     still get the beads tools but don't need session_set_status / session_compact)
+  // MCP URL: base from CONTAINER_ENV; sessionId = orchestrator session (empty for
+  // workers, which get beads tools but not session_set_status / session_compact).
   const sessionId = options.orchestratorSessionId ?? '';
-  const mcpUrl = `${CONTAINER_ENV.BOSS_MAN_API_URL}/mcp?sessionId=${sessionId}&projectId=${encodeURIComponent(options.projectId)}`;
+  // apiKey authenticates the container to the gated /mcp endpoint (non-loopback via host.docker.internal).
+  const mcpUrl = `${CONTAINER_ENV.BOSS_MAN_API_URL}/mcp?sessionId=${sessionId}&projectId=${encodeURIComponent(options.projectId)}&apiKey=${encodeURIComponent(LITELLM_MASTER_KEY)}`;
 
-  // Build the agent-type-specific hook command that writes the MCP config file inside
-  // the container workspace. Using printf with a format string sidesteps any quoting
-  // issues with JSON content (no shell variable expansion needed — all values are baked in).
+  // Writes the agent-specific MCP config inside the container. printf format string
+  // avoids quoting issues — all values baked in, no shell expansion.
   function buildMcpHookCommand(provider: string): string {
     if (provider === 'codex') {
-      // Use printf with \n in the format string — printf interprets \n as a real newline.
-      // %s is substituted with the URL (double-quoted by JSON.stringify for shell safety).
       return `mkdir -p /workspace/.codex && printf '[mcp_servers.boss-man]\\nurl = "%s"\\n' ${JSON.stringify(mcpUrl)} > /workspace/.codex/config.toml`;
     }
     if (provider === 'opencode') {
@@ -282,26 +301,20 @@ export async function startRun(options: StartRunOptions): Promise<void> {
       resumeSession: options.resumeSessionId,
       signal: abortController.signal,
       completionSignal: '<task-complete/>',
-      // Grace window after the completion signal fires. Prevents zombie runs where
-      // a spawned child (MCP server, git, gh) keeps stdout open after the agent exits.
+      // Grace window after completion signal — prevents zombies where a spawned
+      // child (MCP server, git, gh) holds stdout open after the agent exits.
       completionTimeoutSeconds: 90,
       hooks: {
         sandbox: {
           onSandboxReady: [
-            // Run prismo doctor before the agent starts to generate .claudeignore and
-            // context summary files. This prevents agents from indexing node_modules,
-            // dist/, .git, and other large irrelevant directories, saving significant
-            // tokens on every run without any LLM cost.
+            // prismo doctor: generates .claudeignore + context summaries so agents
+            // skip node_modules/dist/.git — saves tokens, no LLM cost.
             { command: 'npx getprismo doctor --quiet 2>/dev/null || true', timeoutMs: 30_000 },
-            // Install the RTK bash hook into ~/.claude/settings.json so that every
-            // Bash tool call is transparently rewritten (e.g. `git status` →
-            // `rtk git status`), saving 60-90% of tokens on dev commands.
-            // --hook-only: no RTK.md written to CLAUDE.md (zero extra context tokens).
-            // --auto-patch: non-interactive (no stdin prompt).
+            // RTK bash hook: rewrites Bash calls (`git status` → `rtk git status`),
+            // saving 60-90% of tokens on dev commands. --hook-only (no CLAUDE.md
+            // write) · --auto-patch (non-interactive).
             { command: 'rtk init -g --hook-only --auto-patch 2>/dev/null || true', timeoutMs: 10_000 },
-            // Write the MCP config so the agent can reach the boss-man MCP server.
-            // Orchestrator runs get a session-scoped URL; worker runs get an empty
-            // sessionId but still have access to the beads tools.
+            // MCP config so the agent reaches the boss-man server.
             { command: mcpHookCommand, timeoutMs: 5_000 },
           ],
         },
@@ -323,30 +336,7 @@ export async function startRun(options: StartRunOptions): Promise<void> {
     const usage = sumUsage(result.iterations);
     const lastSession = result.iterations.at(-1)?.sessionId ?? null;
 
-    let changedFiles: string[] = [];
-    if (result.commits.length > 0) {
-      try {
-        const firstSha = result.commits[0].sha;
-        const lastSha = result.commits.at(-1)!.sha;
-        const raw = execFileSync(
-          'git',
-          ['-C', options.repoPath, 'diff', '--name-only', `${firstSha}^`, lastSha],
-          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-        );
-        changedFiles = raw.split('\n').filter(Boolean);
-      } catch {
-        // git diff failed (e.g. first commit with no parent) — try alternate form
-        try {
-          const lastSha = result.commits.at(-1)!.sha;
-          const raw = execFileSync(
-            'git',
-            ['-C', options.repoPath, 'diff-tree', '--no-commit-id', '-r', '--name-only', lastSha],
-            { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-          );
-          changedFiles = raw.split('\n').filter(Boolean);
-        } catch { /* leave empty */ }
-      }
-    }
+    const changedFiles = getChangedFiles(options.repoPath, result.commits);
 
     updateRun(options.id, {
       status: 'completed',
@@ -359,8 +349,6 @@ export async function startRun(options: StartRunOptions): Promise<void> {
       changed_files: changedFiles.length > 0 ? JSON.stringify(changedFiles) : null,
     });
 
-    // Auto-close the associated task if the run was linked to one.
-    // Safety net for when the orchestrator forgets to call beads_complete_task.
     autoCloseBeadsTask(options.id);
 
     pushEvent(options.id, { type: 'done', timestamp: new Date().toISOString() });

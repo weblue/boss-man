@@ -1,11 +1,10 @@
-import { insertEvent, listEvents } from './db.js';
+import { insertEvent, listEvents, getRun } from './db.js';
 
 type Subscriber = (event: AgentEvent) => void;
 
 export interface AgentEvent {
-  /** Stable autoincrement sequence number from the terminal_events DB row.
-   *  Present on persisted events and on live events after pushEvent embeds it.
-   *  Clients use this for deduplication when replaying + live streams overlap. */
+  /** Stable sequence number (terminal_events row id). Set on persisted events and
+   *  on live events after pushEvent. Clients dedupe replay/live overlap by it. */
   seq?: number;
   type: 'text' | 'toolCall' | 'toolResult' | 'iteration' | 'usage' | 'error' | 'done';
   text?: string;
@@ -23,8 +22,7 @@ export function subscribe(runId: string, fn: Subscriber): () => void {
   return () => subscribers.get(runId)?.delete(fn);
 }
 
-/** Persist an event and broadcast it to all live subscribers.
- *  Returns the DB row id (= seq) so callers can track the sequence number. */
+/** Persist + broadcast an event. Returns the row id (= seq). */
 export function pushEvent(runId: string, event: AgentEvent): number {
   const seq = insertEvent({
     run_id: runId,
@@ -41,10 +39,9 @@ export function getPersistedEvents(runId: string): AgentEvent[] {
   return listEvents(runId).flatMap((event) => {
     try {
       const parsed = JSON.parse(event.data) as AgentEvent;
-      // Attach the stable DB row id so clients can deduplicate against live events.
-      return [{ ...parsed, seq: event.id }];
+      return [{ ...parsed, seq: event.id }]; // seq = row id for client dedup
     } catch {
-      // Malformed JSON in the DB — surface the raw data rather than dropping the event.
+      // Malformed JSON — surface raw data rather than drop the event.
       return [{
         seq: event.id,
         type: event.type as AgentEvent['type'],
@@ -57,4 +54,81 @@ export function getPersistedEvents(runId: string): AgentEvent[] {
 
 export function cleanupRunStream(runId: string) {
   subscribers.delete(runId);
+}
+
+const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
+/** Build and return an SSE Response that streams events for the given run. */
+export function createRunEventStream(runId: string, signal: AbortSignal): Response {
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        const enc = new TextEncoder();
+        let closed = false;
+        let unsub: (() => void) | undefined;
+        let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+
+        const close = () => {
+          if (closed) return;
+          closed = true;
+          clearInterval(heartbeatTimer);
+          unsub?.();
+          try { controller.close(); } catch { /* already closed */ }
+        };
+
+        const send = (event: AgentEvent) => {
+          if (closed) return;
+          try {
+            controller.enqueue(enc.encode(`data: ${JSON.stringify(event)}\n\n`));
+          } catch {
+            close();
+            return;
+          }
+          if (event.type === 'done' || event.type === 'error') close();
+        };
+
+        // Subscribe before replay to avoid missing a live event in the gap; client dedupes by seq.
+        unsub = subscribe(runId, send);
+
+        // Replay persisted events so late joiners see full history.
+        for (const event of getPersistedEvents(runId)) {
+          send(event);
+          if (closed) return;
+        }
+
+        // Terminal status with no done/error persisted (cancelled, server restart) → synthesize + close.
+        if (!closed) {
+          const currentRun = getRun(runId);
+          if (!currentRun || TERMINAL_RUN_STATUSES.has(currentRun.status)) {
+            const termType = currentRun?.status === 'failed' ? 'error' : 'done';
+            send({
+              type: termType,
+              text: currentRun?.error ?? undefined,
+              timestamp: new Date().toISOString(),
+            });
+            return;
+          }
+        }
+
+        // 15s heartbeat — keeps the connection past idle-closing proxies/LBs.
+        heartbeatTimer = setInterval(() => {
+          if (closed) return;
+          try {
+            controller.enqueue(enc.encode(': heartbeat\n\n'));
+          } catch {
+            close();
+          }
+        }, 15_000);
+
+        signal.addEventListener('abort', close);
+      },
+    }),
+    {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
+    },
+  );
 }

@@ -1,6 +1,6 @@
 # Boss Man Dashboard
 
-A local web dashboard for managing multi-agent Claude Code sessions against your own codebases. An **orchestrator** agent runs a structured discovery interview with you, then dispatches **worker** agents (implementer, reviewer, test-generator, etc.) to execute tasks — all tracked in a React UI with live event streaming.
+Local web dashboard for multi-agent Claude Code sessions on your codebases. An **orchestrator** agent interviews you, then dispatches **worker** agents (implementer, reviewer, test-generator, …). React UI, live event streaming.
 
 ---
 
@@ -8,61 +8,47 @@ A local web dashboard for managing multi-agent Claude Code sessions against your
 
 ```
 Browser UI (Vite + React)
-        │
         │ REST + SSE
         ▼
  API Server (Hono / Node)
         │
-   ┌────┼────────────────────┐
-   │    │                    │
-   ▼    ▼                    ▼
- SQLite (runs.db)       Sandcastle SDK
- tasks, memories,       ──────────────
- runs, events
-                        Docker sandbox
-                        (Claude Code)
-                              │
-                         git worktree
-                         (your repo)
+   ┌────┴────────────────┐
+   ▼                     ▼
+ SQLite (runs.db)    Sandcastle SDK
+ tasks, memories,    Docker sandbox
+ runs, events        (Claude Code)
+                          │
+                     git worktree
 ```
 
-**Key components:**
-
-| Component | What it does |
-|-----------|-------------|
-| `server/` | Hono API server — projects, sessions, runs, SSE streaming, task/memory API |
-| `ui/` | React SPA — chat, task board (kanban), run history, spec viewer |
-| `sandcastle/` | Docker image for the agent sandbox (Claude Code + `spawn-worker`) |
-| `prompts/` | Orchestrator and worker system prompts |
-| SQLite (`runs.db`) | Persistent store for runs, tasks, memories, events, and sessions |
-| LiteLLM | Model proxy — provides `boss-man/high|medium|low` tier aliases |
-| Langfuse | Optional LLM observability (traces, token costs) |
+| Component | Role |
+|-----------|------|
+| `server/` | Hono API — projects, sessions, runs, SSE, task/memory API |
+| `ui/` | React SPA — chat, task board, run history, spec viewer |
+| `sandcastle/` | Agent sandbox image (Claude Code + `spawn-worker`) |
+| `prompts/` | Orchestrator + worker prompts |
+| SQLite (`runs.db`) | Store for runs, tasks, memories, events, sessions |
+| LiteLLM | Model proxy — `boss-man/high\|medium\|low` aliases |
+| Langfuse | Optional observability (traces, costs) |
 
 ---
 
 ## Prerequisites
 
-- **Node.js 22+** (use `nvm install 22`)
-- **Docker + Docker Compose v2**
-- **git**
-- API keys: `ANTHROPIC_API_KEY` (required), `OPENAI_API_KEY` (optional)
+- Node.js 22+ (`nvm install 22`)
+- Docker + Compose v2
+- git
+- Keys: `ANTHROPIC_API_KEY` (required), `OPENAI_API_KEY` (optional)
 
 ---
 
-## Installation
+## Install
 
 ```bash
 ./install.sh
 ```
 
-This one-shot script:
-1. Checks prerequisites
-2. Generates `.env` with random secrets (copies `ANTHROPIC_API_KEY` from shell if set)
-3. Runs `npm install` for all workspaces
-4. Builds the agent sandbox Docker image (`boss-man:sandbox`)
-5. Runs a smoke test on the sandbox image
-
-Edit `.env` after generation to set any keys that weren't auto-detected.
+Checks prereqs · generates `.env` with random secrets (copies `ANTHROPIC_API_KEY` from shell) · `npm install` all workspaces · builds sandbox image (`boss-man:sandbox`) · smoke-tests it. Re-runnable — skips done steps. Edit `.env` after for missing keys.
 
 ---
 
@@ -70,56 +56,47 @@ Edit `.env` after generation to set any keys that weren't auto-detected.
 
 ### `./start.sh`
 
-Starts the full dashboard. Detects whether LiteLLM is already running at `:4000` (e.g. from a sibling project like ao-briefcase) and reuses it if so, otherwise starts the standalone Docker Compose stack.
+Starts everything. Reuses LiteLLM at `:4000` if already running (e.g. sibling project), else starts the standalone Compose stack. `Ctrl+C` stops cleanly.
 
-**What it starts:**
-- Docker services: Langfuse (`:3002`), and LiteLLM (`:4000`) if not already running
-- API server via `tsx watch` at `:3001`
-- Vite dev server (UI) at `:5173`
-
-Press `Ctrl+C` to stop everything cleanly.
+Starts:
+- Docker: Langfuse (`:3002`), LiteLLM (`:4000`) if needed
+- API server at `:8771`
+- UI via nginx at `:8770`
 
 ### `./stop.sh`
 
-Stops the dev servers (API + UI). Accepts optional flags:
-
 ```bash
-./stop.sh                    # stop dev servers only
-./stop.sh --clean-containers # also remove any stale sandbox containers
-./stop.sh --infra            # also stop Docker Compose services (LiteLLM, Langfuse)
+./stop.sh                    # dev servers only
+./stop.sh --clean-containers # + remove stale sandbox containers
+./stop.sh --infra            # + stop Compose services (LiteLLM, Langfuse)
 ```
-
-### `./install.sh`
-
-One-shot setup. Safe to re-run — skips already-completed steps (existing `.env`, built sandbox image).
 
 ---
 
 ## Configuration
 
-All configuration lives in `.env` (generated from `.env.example` by `install.sh`). Key variables:
+All in `.env` (generated by `install.sh`). Key vars:
 
-| Variable | Description |
-|----------|-------------|
-| `ANTHROPIC_API_KEY` | Anthropic API key (used by LiteLLM for Claude models) |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Optional — use Anthropic OAuth token instead of API key inside the sandbox |
-| `LITELLM_MASTER_KEY` | LiteLLM admin key (auto-generated) |
-| `LITELLM_API_KEY` | LiteLLM virtual key (auto-generated, same value as master) |
-| `LANGFUSE_SECRET_KEY` / `LANGFUSE_PUBLIC_KEY` | Langfuse API keys (auto-generated) |
-| `SANDBOX_IMAGE` | Docker image name for the agent sandbox (default: `boss-man:sandbox`) |
-| `SERVER_PORT` | API server port (default: `3001`) |
+| Variable | Purpose |
+|----------|---------|
+| `ANTHROPIC_API_KEY` | Claude key (via LiteLLM) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Optional — OAuth token instead of API key in sandbox |
+| `LITELLM_MASTER_KEY` | LiteLLM admin key (auto-gen) |
+| `LITELLM_API_KEY` | LiteLLM virtual key (auto-gen, = master) |
+| `LANGFUSE_SECRET_KEY` / `LANGFUSE_PUBLIC_KEY` | Langfuse keys (auto-gen) |
+| `SANDBOX_IMAGE` | Sandbox image name (default `boss-man:sandbox`) |
+| `SERVER_PORT` | API port (default `8771`) |
+| `UI_PORT` | UI port (default `8770`) |
 
 ### Model tiers
 
-LiteLLM exposes three tier aliases used throughout the system:
-
 | Tier | Model |
 |------|-------|
-| `boss-man/high` | Claude Opus (orchestrator, reviewer) |
-| `boss-man/medium` | Claude Sonnet (implementer) |
-| `boss-man/low` | Claude Haiku (simple workers) |
+| `boss-man/high` | Opus (orchestrator, reviewer) |
+| `boss-man/medium` | Sonnet (implementer) |
+| `boss-man/low` | Haiku (simple workers) |
 
-You can also pass any direct model ID (e.g. `claude-sonnet-4-6`) from the UI model selector.
+Or pass any direct model ID (e.g. `claude-sonnet-4-6`) from the UI selector.
 
 ---
 
@@ -127,40 +104,32 @@ You can also pass any direct model ID (e.g. `claude-sonnet-4-6`) from the UI mod
 
 ### Orchestrator (`prompts/orchestrator.md`)
 
-The orchestrator is a long-running Claude Code session that interviews you across 8 discovery topics before writing specs or dispatching workers:
+Long-running Claude Code session. Interviews you across 8 topics before specs/workers:
 
 1. Scope & deliverables
 2. Stack & language
-3. Testing strategy
+3. Testing
 4. Acceptance criteria
-5. Non-functional requirements (perf, security, scale)
-6. Protected territory (do-not-touch files/APIs)
+5. Non-functional (perf, security, scale)
+6. Protected territory (do-not-touch)
 7. Integration points (APIs, DBs, auth)
 8. User workflow
 
-Each topic ends with `<task-complete/>` to pause and wait for your reply. Only after all 8 are resolved does it proceed to planning and task creation.
+Each topic ends `<task-complete/>` — pauses for your reply. Plans/creates tasks only after all 8 resolved.
 
 ### Workers (`prompts/workers/`)
 
-Workers are short-lived single-iteration agents dispatched by the orchestrator via `spawn-worker`:
-
-| Role | Prompt file |
-|------|------------|
-| `implementer` | `implementer.md` |
-| `test_generator` | `test_generator.md` |
-| `reviewer` | `reviewer.md` |
-| `security_reviewer` | `security_reviewer.md` |
-| `researcher` | `researcher.md` |
+Short-lived single-iteration agents dispatched via `spawn-worker`: `implementer`, `test_generator`, `reviewer`, `security_reviewer`, `researcher`, `refactor`.
 
 ---
 
-## How Sessions Work
+## Sessions
 
-1. **Start a session** — paste your initial spec into the Chat tab, choose a backend (Anthropic OAuth or LiteLLM) and model, click Start.
-2. **Discovery** — the orchestrator asks one question per topic. Reply in the chat input and hit Enter.
-3. **Each reply** is a new run that resumes the Claude Code session (`--resume <session-id>`), so full conversation context is preserved across turns.
-4. **Mid-session model switching** — the model dropdown in the chat reply area is live: change it before any reply to switch models without losing context. If a run is active, click "cancel & switch" to abort it and prepare a reply with the new model.
-5. **Session persistence** — Claude Code session files are stored on the host at `data/claude-sessions/<project-id>/` and bind-mounted into each container, so sessions survive server restarts.
+1. **Start** — paste spec in Chat, pick backend + model, Start.
+2. **Discovery** — orchestrator asks one question per topic; reply + Enter.
+3. **Each reply** = new run resuming the Claude Code session (`--resume`), so context persists.
+4. **Mid-session model switch** — change the dropdown before any reply. If a run is active, "cancel & switch" aborts it first.
+5. **Persistence** — session files at `data/claude-sessions/<project-id>/`, bind-mounted into containers; survive restarts.
 
 ---
 
@@ -168,63 +137,45 @@ Workers are short-lived single-iteration agents dispatched by the orchestrator v
 
 ```
 boss-man-dashboard/
-├── server/              # Hono API server (TypeScript)
-│   └── src/
-│       ├── index.ts     # Entry point, startup, markInterruptedRuns
-│       ├── db.ts        # SQLite schema + queries
-│       ├── runner.ts    # Sandcastle run orchestration
-│       ├── streaming.ts # SSE event pub/sub + SQLite persistence
-│       ├── config.ts    # Env var resolution, model/auth helpers
-│       └── routes/      # sessions, runs, projects, beads, specs, models
-├── ui/                  # Vite + React SPA (TypeScript)
-│   └── src/
-│       ├── App.tsx      # All UI components (single-file)
-│       ├── api.ts       # Typed API client functions
-│       └── types.ts     # Shared TypeScript types
-├── sandcastle/
-│   └── Dockerfile       # Agent sandbox image (Claude Code + spawn-worker)
+├── server/src/
+│   ├── index.ts     # entry, startup, markInterruptedRuns
+│   ├── db.ts        # SQLite schema + queries
+│   ├── runner.ts    # Sandcastle run orchestration
+│   ├── streaming.ts # SSE pub/sub + persistence
+│   ├── config.ts    # env, model/auth helpers
+│   └── routes/      # sessions, runs, projects, beads, specs, models
+├── ui/src/
+│   ├── App.tsx      # all UI components (single file)
+│   ├── api.ts       # typed API client
+│   └── types.ts     # shared types
+├── sandcastle/Dockerfile  # agent sandbox image
 ├── prompts/
-│   ├── orchestrator.md  # 8-topic discovery system prompt
-│   └── workers/         # Per-role worker prompts
-├── scripts/
-│   └── spawn-worker     # Shell script invoked by orchestrator to dispatch workers
-├── data/                # Runtime data (gitignored)
-│   ├── runs.db          # SQLite — projects, sessions, runs, events
-│   ├── logs/            # Per-run raw log files
-│   └── claude-sessions/ # Persisted Claude Code session caches (per project)
-├── docker-compose.yml   # Langfuse, standalone LiteLLM + Postgres
-├── litellm-config.yaml  # Model aliases and routing config
-├── callbacks.py         # LiteLLM callback for OpenAI Responses API compat
-├── install.sh           # One-shot setup
-├── start.sh             # Start all services
-└── stop.sh              # Stop dev servers (optionally infra too)
+│   ├── orchestrator.md
+│   └── workers/
+├── scripts/spawn-worker   # orchestrator → worker dispatch
+├── data/                  # runtime (gitignored): runs.db, logs/, claude-sessions/
+├── docker-compose.yml     # Langfuse, standalone LiteLLM + Postgres
+├── litellm-config.yaml    # model aliases + routing
+├── callbacks.py           # LiteLLM OpenAI-Responses compat
+├── install.sh · start.sh · stop.sh
 ```
 
 ---
 
 ## Sandbox Image
 
-The sandbox is a Docker image that runs Claude Code in an isolated environment. Build it with:
+Docker image running Claude Code isolated. Built by `install.sh`, or manually from project root:
 
 ```bash
-# Run from the project root (not from sandcastle/)
 docker build -t boss-man:sandbox -f sandcastle/Dockerfile .
 ```
 
-`install.sh` does this automatically. The image includes:
-- Claude Code CLI (`@anthropic-ai/claude-code`)
-- PrismoDev (`getprismo`)
-- `spawn-worker` script
-- System-level git config (works for any user ID Sandcastle injects)
-
-Sandcastle runs containers as the **host user's UID/GID**, mounts the git worktree at `/home/agent/workspace`, and symlinks `/workspace → /home/agent/workspace` for compatibility with any prompts that reference either path.
+Includes: Claude Code CLI, PrismoDev (`getprismo`), `spawn-worker`, system-level git config. Sandcastle runs containers as host UID/GID, mounts the worktree at `/home/agent/workspace`, symlinks `/workspace` → it.
 
 ---
 
 ## Task Tracking
 
-Tasks, dependencies, and memories are stored in `runs.db` (the same SQLite database used for runs and events). No external service is required.
+Tasks, deps, memories live in `runs.db` (same SQLite as runs/events). No external service.
 
-The orchestrator manages tasks through MCP tools (`beads_create_task`, `beads_add_dependency`, `beads_list_unblocked`, etc.) backed directly by SQLite. The API server exposes the same operations at `/api/beads/*` for the UI task board.
-
-The `beads_*` tool names are preserved for compatibility with the orchestrator prompt — they refer to the SQLite-backed implementation, not the `bd` CLI.
+Orchestrator manages tasks via MCP tools (`beads_create_task`, `beads_add_dependency`, `beads_list_unblocked`, …) backed by SQLite. Same ops exposed at `/api/beads/*` for the UI board. `beads_*` names kept for prompt compatibility — they're SQLite, not the `bd` CLI.

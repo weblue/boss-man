@@ -231,10 +231,14 @@ export async function listTasks(projectId: string): Promise<BeadsTask[]> {
 }
 
 export async function listModels(): Promise<string[]> {
-  const res = await fetch('/api/models', { headers: authHeaders() });
-  if (!res.ok) return [];
-  const data = await res.json() as { models: string[] };
-  return data.models ?? [];
+  try {
+    const data = await json<{ models: string[] }>(
+      await fetch('/api/models', { headers: authHeaders() }),
+    );
+    return data.models ?? [];
+  } catch {
+    return [];
+  }
 }
 
 export async function listSpecs(projectId: string): Promise<SpecFile[]> {

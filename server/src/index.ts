@@ -1,8 +1,9 @@
 import { serve } from '@hono/node-server';
 import { getConnInfo } from '@hono/node-server/conninfo';
-import { Hono } from 'hono';
+import { Hono, type MiddlewareHandler } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
+import { timingSafeEqual } from 'node:crypto';
 import { BOSS_MAN_ALLOWED_ORIGIN, LITELLM_MASTER_KEY, SERVER_PORT } from './config.js';
 import projectsRouter from './routes/projects.js';
 import runsRouter from './routes/runs.js';
@@ -13,12 +14,16 @@ import modelsRouter from './routes/models.js';
 import mcpRouter from './routes/mcp.js';
 import { markInterruptedRuns } from './db.js';
 
+if (!LITELLM_MASTER_KEY) {
+  console.error('[startup] LITELLM_MASTER_KEY is not set. Add it to .env and restart.');
+  process.exit(1);
+}
+
 const app = new Hono();
 
 markInterruptedRuns();
 
-// Localhost is always allowed. BOSS_MAN_ALLOWED_ORIGIN adds one external origin
-// (e.g. https://mediachung.us) for reverse-proxy deployments.
+// Localhost always allowed; BOSS_MAN_ALLOWED_ORIGIN adds one external origin for reverse proxies.
 const LOCALHOST_ORIGIN = /^https?:\/\/localhost(:\d+)?$/;
 app.use('*', cors({
   origin: (origin) => {
@@ -32,18 +37,18 @@ app.use('*', logger());
 
 app.get('/health', (c) => c.json({ ok: true, ts: Date.now() }));
 
-// ── Auth gate ────────────────────────────────────────────────────────────────
-// All /api/* routes require the LITELLM_MASTER_KEY.
-// Two accepted forms:
-//   Authorization: Bearer <key>   — standard fetch/XHR (most routes)
-//   ?apiKey=<key>                  — query param for EventSource (browser
-//                                    EventSource cannot set custom headers)
-// Requests from the loopback interface are exempt — covers curl, scripts, and
-// agent containers (via host.docker.internal → host loopback) that don't carry
-// a browser session.
-// /health and /mcp are already outside /api/* so they're also always exempt.
-app.use('/api/*', async (c, next) => {
-  // Loopback bypass — IPv4, IPv6, and IPv4-mapped IPv6 loopback addresses.
+// Constant-time key compare — avoids leaking length/prefix via timing.
+function keyMatches(provided: string): boolean {
+  const a = Buffer.from(provided);
+  const b = Buffer.from(LITELLM_MASTER_KEY);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+// /api/* and /mcp require LITELLM_MASTER_KEY via `Authorization: Bearer <key>`
+// or `?apiKey=<key>` (EventSource can't set headers). Loopback exempt (curl,
+// scripts). Agent containers reach /mcp via host.docker.internal (non-loopback)
+// and carry the key in the MCP URL. /health stays public.
+const authGate: MiddlewareHandler = async (c, next) => {
   const remoteAddr = getConnInfo(c).remote.address ?? '';
   const isLoopback =
     remoteAddr === '127.0.0.1' ||
@@ -54,11 +59,14 @@ app.use('/api/*', async (c, next) => {
   const auth = c.req.header('Authorization') ?? '';
   const headerKey = auth.startsWith('Bearer ') ? auth.slice(7) : '';
   const queryKey = c.req.query('apiKey') ?? '';
-  if (headerKey !== LITELLM_MASTER_KEY && queryKey !== LITELLM_MASTER_KEY) {
+  if (!keyMatches(headerKey) && !keyMatches(queryKey)) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
   return next();
-});
+};
+
+app.use('/api/*', authGate);
+app.use('/mcp', authGate);
 
 app.route('/', projectsRouter);
 app.route('/', runsRouter);

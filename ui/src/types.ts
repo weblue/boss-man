@@ -67,7 +67,14 @@ export interface SpecFile {
   last_commit_at: number | null;
 }
 
-export type BeadsTask = Record<string, unknown>;
+export interface BeadsTask {
+  id: string;
+  title: string;
+  body: string;
+  status: string;
+  blocked_by: string | null;
+  claimed_by: string | null;
+}
 
 export interface TranscriptEntry {
   run: Run;

@@ -58,6 +58,7 @@ const TERMINAL_STATUSES = new Set(['completed', 'complete', 'failed', 'cancelled
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
 const COLORS = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#a371f7', '#39c5cf', '#ff7b72'];
 const DEFAULT_ORCHESTRATOR_MODEL = 'boss-man/high';
+const TIER_MODELS = ['boss-man/high', 'boss-man/medium', 'boss-man/low'];
 
 function isTerminal(status?: string | null): boolean {
   return !!status && TERMINAL_STATUSES.has(status);
@@ -108,6 +109,47 @@ function parseSpawnWorkerRole(text: string): string | null {
   return m ? m[1] : null;
 }
 
+function sumRunTokens(runs: Run[]): { input: number; output: number; cacheNew: number; cacheRead: number } {
+  return runs.reduce(
+    (acc, r) => ({
+      input: acc.input + r.total_input_tokens,
+      output: acc.output + r.total_output_tokens,
+      cacheNew: acc.cacheNew + r.total_cache_creation_tokens,
+      cacheRead: acc.cacheRead + r.total_cache_read_tokens,
+    }),
+    { input: 0, output: 0, cacheNew: 0, cacheRead: 0 },
+  );
+}
+
+function TokenBar({
+  totals,
+  compact = false,
+}: {
+  totals: { input: number; output: number; cacheNew: number; cacheRead: number };
+  compact?: boolean;
+}) {
+  const fmt = compact
+    ? (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
+    : (n: number) => n.toLocaleString();
+  return (
+    <div className="grid shrink-0 grid-cols-4 gap-px border-b border-border bg-border">
+      {([
+        ['input', totals.input],
+        ['output', totals.output],
+        ['cache new', totals.cacheNew],
+        ['cache read', totals.cacheRead],
+      ] as [string, number][]).map(([label, value]) => (
+        <div key={label} className={compact ? 'bg-surface px-3 py-2' : 'bg-surface px-4 py-3'}>
+          <div className="text-[10px] uppercase tracking-widest text-text-muted">{label}</div>
+          <div className={compact ? 'mt-0.5 text-xs text-text-primary' : 'mt-1 text-sm text-text-primary'}>
+            {fmt(value)}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function mergeEvents(persisted: AgentEvent[] = [], live: AgentEvent[] = []): AgentEvent[] {
   const seen = new Set<string>();
   return [...persisted, ...live].filter((event) => {
@@ -124,24 +166,50 @@ function useEventStream(path: string | null, onEvent: (event: AgentEvent) => voi
 
   useEffect(() => {
     if (!path) return;
-    // Append the API key as a query param — browser EventSource cannot set
-    // custom headers, so the key must travel in the URL for SSE endpoints.
-    const source = new EventSource(sseUrl(path));
+    let source: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    let done = false;
+    let stopped = false;
 
-    source.onmessage = (message) => {
-      try {
-        onEventRef.current(JSON.parse(message.data as string) as AgentEvent);
-      } catch {
-        // Ignore malformed stream frames.
-      }
+    const connect = () => {
+      if (stopped) return;
+      // EventSource can't set headers, so the API key travels in the URL.
+      source = new EventSource(sseUrl(path));
+
+      source.onopen = () => { attempts = 0; };
+
+      source.onmessage = (message) => {
+        try {
+          const event = JSON.parse(message.data as string) as AgentEvent;
+          if (event.type === 'done' || event.type === 'error') done = true;
+          onEventRef.current(event);
+        } catch {
+          // Ignore malformed stream frames.
+        }
+      };
+
+      source.onerror = () => {
+        source?.close();
+        if (stopped || done) return;
+        // Network drop (not a normal end) → reconnect with backoff (1s→30s).
+        // Server replays persisted events on reconnect; client dedupes by seq.
+        const delay = Math.min(1000 * 2 ** attempts, 30_000);
+        attempts += 1;
+        reconnectTimer = setTimeout(connect, delay);
+      };
     };
-    source.onerror = () => source.close();
 
-    return () => source.close();
+    connect();
+
+    return () => {
+      stopped = true;
+      clearTimeout(reconnectTimer);
+      source?.close();
+    };
   }, [path]);
 }
 
-/** Maps a run role to a human-readable TDD lifecycle phase label */
 const ROLE_PHASE: Record<string, string> = {
   orchestrator: '',          // use session.status instead
   researcher:        'researching',
@@ -151,6 +219,8 @@ const ROLE_PHASE: Record<string, string> = {
   security_reviewer: 'security review',
   refactor:          'refactoring',
 };
+
+const WORKER_PHASE_STATUSES = new Set(Object.values(ROLE_PHASE).filter(Boolean));
 
 /**
  * Derives a display label for a session based on its active worker runs.
@@ -167,6 +237,7 @@ function sessionPhaseLabel(session: Session, projectRuns: Run[]): string {
 }
 
 function StatusBadge({ status, pulse }: { status: string; pulse?: boolean }) {
+  const isWorkerPhase = WORKER_PHASE_STATUSES.has(status);
   const color =
     status === 'running' || status === 'completed' || status === 'complete'
       ? 'text-green'
@@ -174,14 +245,11 @@ function StatusBadge({ status, pulse }: { status: string; pulse?: boolean }) {
         ? 'text-red'
         : status === 'queued' || status === 'planning'
           ? 'text-orange'
-          : status === 'researching' || status === 'writing tests' || status === 'implementing' ||
-            status === 'reviewing' || status === 'security review' || status === 'refactoring'
+          : isWorkerPhase
             ? 'text-blue'
             : 'text-text-muted';
 
-  const isPulsing = pulse ?? (status === 'running' || status === 'queued' ||
-    status === 'researching' || status === 'writing tests' || status === 'implementing' ||
-    status === 'reviewing' || status === 'security review' || status === 'refactoring');
+  const isPulsing = pulse ?? (status === 'running' || status === 'queued' || isWorkerPhase);
 
   return (
     <span className="inline-flex items-center gap-1 text-xs">
@@ -446,7 +514,6 @@ function ChatTab({ project }: { project: Project }) {
   });
   const availableModels = modelsQuery.data ?? [];
   // Always show tier aliases at the top; deduplicate in case LiteLLM also returns them.
-  const TIER_MODELS = ['boss-man/high', 'boss-man/medium', 'boss-man/low'];
   const allModels = [...TIER_MODELS, ...availableModels.filter(m => !TIER_MODELS.includes(m))];
 
   const sessionsQuery = useQuery({
@@ -571,6 +638,11 @@ function ChatTab({ project }: { project: Project }) {
     (currentRun.status === 'completed' || currentRun.status === 'cancelled');
   const transcript = transcriptQuery.data ?? (sessionQuery.data?.runs ?? []).map((run) => ({ run, events: [] }));
 
+  const chatTotals = useMemo(
+    () => (sessionQuery.data?.runs?.length ? sumRunTokens(sessionQuery.data.runs) : null),
+    [sessionQuery.data?.runs],
+  );
+
   const submitNewSession = (event: FormEvent) => {
     event.preventDefault();
     if (!newSessionDraft.trim()) return;
@@ -585,17 +657,20 @@ function ChatTab({ project }: { project: Project }) {
     window.localStorage.setItem('boss-man.orchestratorModel', model);
   };
 
-  const submitReply = (event: FormEvent) => {
-    event.preventDefault();
+  const sendReply = () => {
     if (!draft.trim() || !canReply) return;
     replyMutation.mutate({ message: draft.trim(), model: orchestratorModel });
+  };
+
+  const submitReply = (event: FormEvent) => {
+    event.preventDefault();
+    sendReply();
   };
 
   const handleReplyKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (!draft.trim() || !canReply) return;
-      replyMutation.mutate({ message: draft.trim(), model: orchestratorModel });
+      sendReply();
     }
   };
 
@@ -693,35 +768,7 @@ function ChatTab({ project }: { project: Project }) {
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col bg-base">
-        {/* Token budget bar — shown whenever a session is selected and has run data */}
-        {sessionQuery.data && sessionQuery.data.runs.length > 0 && (() => {
-          const runs = sessionQuery.data.runs;
-          const totals = runs.reduce(
-            (acc, r) => ({
-              input: acc.input + r.total_input_tokens,
-              output: acc.output + r.total_output_tokens,
-              cacheNew: acc.cacheNew + r.total_cache_creation_tokens,
-              cacheRead: acc.cacheRead + r.total_cache_read_tokens,
-            }),
-            { input: 0, output: 0, cacheNew: 0, cacheRead: 0 },
-          );
-          const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-          return (
-            <div className="grid shrink-0 grid-cols-4 gap-px border-b border-border bg-border">
-              {([
-                ['input', totals.input],
-                ['output', totals.output],
-                ['cache new', totals.cacheNew],
-                ['cache read', totals.cacheRead],
-              ] as [string, number][]).map(([label, value]) => (
-                <div key={label} className="bg-surface px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-widest text-text-muted">{label}</div>
-                  <div className="mt-0.5 text-xs text-text-primary">{fmt(value)}</div>
-                </div>
-              ))}
-            </div>
-          );
-        })()}
+        {chatTotals && <TokenBar totals={chatTotals} compact />}
         <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {!selectedSessionId ? (
             <div className="text-xs text-text-muted">Select or start a session.</div>
@@ -903,30 +950,9 @@ function ChatTab({ project }: { project: Project }) {
   );
 }
 
-function taskValue(task: BeadsTask, keys: string[]): string {
-  for (const key of keys) {
-    const value = task[key];
-    if (typeof value === 'string') return value;
-    if (typeof value === 'number') return String(value);
-    if (Array.isArray(value)) {
-      return value.map((item) => {
-        if (typeof item === 'string' || typeof item === 'number') return String(item);
-        // Beads dependency objects: { depends_on_id, issue_id, type, ... }
-        if (item && typeof item === 'object') {
-          const obj = item as Record<string, unknown>;
-          return String(obj.depends_on_id ?? obj.issue_id ?? obj.id ?? '?');
-        }
-        return '?';
-      }).filter(Boolean).join(', ');
-    }
-  }
-  return '';
-}
-
 function taskGroup(task: BeadsTask): 'open' | 'in-progress' | 'done' {
-  const status = taskValue(task, ['status', 'state']).toLowerCase();
-  if (['done', 'closed', 'complete', 'completed'].includes(status)) return 'done';
-  if (['in-progress', 'in_progress', 'running', 'claimed', 'started'].includes(status)) return 'in-progress';
+  if (task.status === 'closed') return 'done';
+  if (task.status === 'in_progress') return 'in-progress';
   return 'open';
 }
 
@@ -976,12 +1002,11 @@ function TasksTab({ project }: { project: Project }) {
             <span className="text-xs text-text-muted">{grouped[status].length}</span>
           </div>
           <div className="p-3">
-            {grouped[status].map((task, index) => {
-              const id = taskValue(task, ['id', 'task_id', 'bead_id']) || `task-${index}`;
-              const title = taskValue(task, ['title', 'description', 'name', 'summary']) || id;
-              const body = taskValue(task, ['body', 'details', 'notes']);
-              const blockers = taskValue(task, ['blocked_by', 'blockedBy', 'dependencies']);
-              const runId = taskValue(task, ['run_id', 'assigned_run_id', 'runId']);
+            {grouped[status].map((task) => {
+              const id = task.id;
+              const title = task.title || id;
+              const body = task.body;
+              const blockers = task.blocked_by ?? '';
               const linkedRuns = runsByTaskId.get(id) ?? [];
               // Most recent run first
               const latestRun = linkedRuns.at(-1);
@@ -994,7 +1019,7 @@ function TasksTab({ project }: { project: Project }) {
                     <span className="shrink-0 text-[10px] text-text-muted">{id}</span>
                   </div>
                   {body && <div className="line-clamp-3 text-xs leading-5 text-text-muted">{body}</div>}
-                  {(blockers || latestRun || runId) && (
+                  {(blockers || latestRun) && (
                     <div className="mt-3 space-y-1 border-t border-border pt-2 text-[10px] text-text-muted">
                       {blockers && <div>blocked by: {blockers}</div>}
                       {latestRun && (
@@ -1010,16 +1035,6 @@ function TasksTab({ project }: { project: Project }) {
                           <span className="truncate">
                             {hasActiveRun ? 'running' : hasFailedRun ? 'stalled' : 'completed'} — {latestRun.name ?? latestRun.role}
                           </span>
-                        </Link>
-                      )}
-                      {!latestRun && runId && (
-                        <Link
-                          className="inline-flex max-w-full items-center gap-1 text-blue hover:underline"
-                          title="Open run logs"
-                          to={`/projects/${project.id}/runs?run=${encodeURIComponent(runId)}`}
-                        >
-                          <Terminal size={11} className="shrink-0" />
-                          <span className="truncate">run: {runId}</span>
                         </Link>
                       )}
                     </div>
@@ -1164,20 +1179,29 @@ function RunsTab({ project }: { project: Project }) {
 
   const logEvents = selectedRun ? mergeEvents(runEventsQuery.data, eventsByRun[selectedRun.id]) : [];
 
+  const changedFiles = useMemo((): string[] => {
+    if (!selectedRun?.changed_files) return [];
+    try {
+      const parsed = JSON.parse(selectedRun.changed_files) as unknown;
+      return Array.isArray(parsed) ? (parsed as string[]) : [];
+    } catch {
+      return [];
+    }
+  }, [selectedRun?.changed_files]);
+
+  const selectedRunTotals = useMemo(() => selectedRun ? {
+    input: selectedRun.total_input_tokens,
+    output: selectedRun.total_output_tokens,
+    cacheNew: selectedRun.total_cache_creation_tokens,
+    cacheRead: selectedRun.total_cache_read_tokens,
+  } : null, [selectedRun]);
+
   const orcAllEvents = useMemo(() => {
     const entries = orcTranscriptQuery.data ?? [];
     return entries.flatMap(({ run, events }) => mergeEvents(events, eventsByRun[run.id]));
   }, [orcTranscriptQuery.data, eventsByRun]);
 
-  const orcTotals = useMemo(() => orcTurns.reduce(
-    (acc, r) => ({
-      input: acc.input + r.total_input_tokens,
-      output: acc.output + r.total_output_tokens,
-      cacheNew: acc.cacheNew + r.total_cache_creation_tokens,
-      cacheRead: acc.cacheRead + r.total_cache_read_tokens,
-    }),
-    { input: 0, output: 0, cacheNew: 0, cacheRead: 0 },
-  ), [orcTurns]);
+  const orcTotals = useMemo(() => sumRunTokens(orcTurns), [orcTurns]);
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -1277,19 +1301,7 @@ function RunsTab({ project }: { project: Project }) {
                 </button>
               )}
             </div>
-            <div className="grid shrink-0 grid-cols-4 gap-px border-b border-border bg-border">
-              {([
-                ['input', orcTotals.input],
-                ['output', orcTotals.output],
-                ['cache new', orcTotals.cacheNew],
-                ['cache read', orcTotals.cacheRead],
-              ] as [string, number][]).map(([label, value]) => (
-                <div key={label} className="bg-surface px-4 py-3">
-                  <div className="text-[10px] uppercase tracking-widest text-text-muted">{label}</div>
-                  <div className="mt-1 text-sm text-text-primary">{value.toLocaleString()}</div>
-                </div>
-              ))}
-            </div>
+            <TokenBar totals={orcTotals} />
             <pre className="min-h-0 flex-1 overflow-auto bg-base p-4 text-xs leading-5 text-text-primary">
               {orcAllEvents.length > 0
                 ? orcAllEvents
@@ -1364,19 +1376,7 @@ function RunsTab({ project }: { project: Project }) {
                 </code>
               </div>
             )}
-            <div className="grid shrink-0 grid-cols-4 gap-px border-b border-border bg-border">
-              {[
-                ['input', selectedRun.total_input_tokens],
-                ['output', selectedRun.total_output_tokens],
-                ['cache new', selectedRun.total_cache_creation_tokens],
-                ['cache read', selectedRun.total_cache_read_tokens],
-              ].map(([label, value]) => (
-                <div key={label} className="bg-surface px-4 py-3">
-                  <div className="text-[10px] uppercase tracking-widest text-text-muted">{label}</div>
-                  <div className="mt-1 text-sm text-text-primary">{Number(value).toLocaleString()}</div>
-                </div>
-              ))}
-            </div>
+            {selectedRunTotals && <TokenBar totals={selectedRunTotals} />}
             <div className="min-h-0 flex-1 overflow-auto bg-base p-4 text-xs leading-5 text-text-primary">
               {logEvents.length > 0
                 ? logEvents.map((event) => {
@@ -1419,31 +1419,21 @@ function RunsTab({ project }: { project: Project }) {
                 </div>
               )}
             </div>
-            {selectedRun.changed_files && (() => {
-              let files: string[];
-              try {
-                files = JSON.parse(selectedRun.changed_files) as string[];
-              } catch {
-                return null;
-              }
-              if (!Array.isArray(files)) return null;
-              if (files.length === 0) return null;
-              return (
-                <div className="shrink-0 border-t border-border">
-                  <div className="border-b border-border bg-elevated/30 px-4 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-text-muted">
-                    Changed files ({files.length})
-                  </div>
-                  <div className="max-h-40 overflow-y-auto">
-                    {files.map((f) => (
-                      <div key={f} className="flex items-center gap-2 border-b border-border/50 px-4 py-1.5 text-xs text-text-muted">
-                        <FileText size={11} className="shrink-0" />
-                        <span className="min-w-0 flex-1 truncate font-mono">{f}</span>
-                      </div>
-                    ))}
-                  </div>
+            {changedFiles.length > 0 && (
+              <div className="shrink-0 border-t border-border">
+                <div className="border-b border-border bg-elevated/30 px-4 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-text-muted">
+                  Changed files ({changedFiles.length})
                 </div>
-              );
-            })()}
+                <div className="max-h-40 overflow-y-auto">
+                  {changedFiles.map((f) => (
+                    <div key={f} className="flex items-center gap-2 border-b border-border/50 px-4 py-1.5 text-xs text-text-muted">
+                      <FileText size={11} className="shrink-0" />
+                      <span className="min-w-0 flex-1 truncate font-mono">{f}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         ) : (
           <div className="flex flex-1 items-center justify-center text-xs text-text-muted">Select a run.</div>

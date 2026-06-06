@@ -92,6 +92,7 @@ db.exec(`
   );
 `);
 
+// Snapshotted once at boot — migrations below must be idempotent; add new columns after existing ones only.
 const runColumns = db.prepare<[], { name: string }>('PRAGMA table_info(runs)').all();
 if (!runColumns.some((column) => column.name === 'claude_auth_provider')) {
   db.exec("ALTER TABLE runs ADD COLUMN claude_auth_provider TEXT NOT NULL DEFAULT 'anthropic'");
@@ -184,6 +185,10 @@ const _listRuns = db.prepare<[string], Run>(
 );
 export function listRuns(projectId: string): Run[] { return _listRuns.all(projectId); }
 
+export function isRunActive(run: Run): boolean {
+  return run.status === 'queued' || run.status === 'running';
+}
+
 const _listSessionRuns = db.prepare<[string], Run>(
   'SELECT * FROM runs WHERE orchestrator_session_id = ? ORDER BY created_at ASC'
 );
@@ -204,8 +209,7 @@ const _updateRun = db.prepare(`
     changed_files = COALESCE(@changed_files, changed_files)
   WHERE id = @id
 `);
-// NOTE: COALESCE means passing null for error preserves the existing value.
-// Use clearRunError() when the error field must be explicitly cleared.
+// COALESCE: passing null preserves the value. Use clearRunError() to clear error explicitly.
 const _clearRunError = db.prepare('UPDATE runs SET error = NULL WHERE id = ?');
 export function clearRunError(id: string) { _clearRunError.run(id); }
 export function updateRun(id: string, fields: Partial<Run>) {
@@ -249,7 +253,7 @@ export interface TerminalEvent {
   timestamp: string;
 }
 
-/** Row as stored in the DB — includes the autoincrement `id` used for stable event sequencing. */
+/** DB row — adds the autoincrement `id` used as the stable event sequence number. */
 export interface StoredEvent extends TerminalEvent {
   id: number;
 }
@@ -258,7 +262,7 @@ const _insertEvent = db.prepare(`
   INSERT INTO terminal_events (run_id, type, data, timestamp)
   VALUES (@run_id, @type, @data, @timestamp)
 `);
-/** Insert an event and return its autoincrement row id (used as the stable sequence number). */
+/** Insert an event; returns its row id (= sequence number). */
 export function insertEvent(event: TerminalEvent): number {
   const result = _insertEvent.run(event);
   return Number(result.lastInsertRowid);
@@ -309,7 +313,7 @@ export function updateSession(id: string, fields: Partial<OrchestratorSession>) 
   _updateSession.run({ id, status: null, name: null, current_run_id: null, ...fields });
 }
 
-// Hoisted at module level so they're compiled once, not re-prepared on every delete call.
+// Hoisted so each statement compiles once.
 const _deleteEventsForRun = db.prepare('DELETE FROM terminal_events WHERE run_id = ?');
 const _deleteRunsForSession = db.prepare('DELETE FROM runs WHERE orchestrator_session_id = ?');
 const _deleteSessionById = db.prepare('DELETE FROM orchestrator_sessions WHERE id = ?');
@@ -383,7 +387,11 @@ export function listUnblockedTasks(projectId: string): Task[] {
 const _insertDep = db.prepare(
   'INSERT OR IGNORE INTO task_deps (child_id, parent_id) VALUES (@child_id, @parent_id)',
 );
-export function addTaskDep(childId: string, parentId: string): void {
+export function addTaskDep(childId: string, parentId: string, projectId: string): void {
+  const child = _getTask.get(childId);
+  const parent = _getTask.get(parentId);
+  if (!child || child.project_id !== projectId) return;
+  if (!parent || parent.project_id !== projectId) return;
   _insertDep.run({ child_id: childId, parent_id: parentId });
 }
 
@@ -395,19 +403,19 @@ export function getTaskParents(taskId: string): string[] {
 }
 
 const _closeTask = db.prepare(
-  "UPDATE tasks SET status = 'closed', closed_at = ? WHERE id = ?",
+  "UPDATE tasks SET status = 'closed', closed_at = ? WHERE id = ? AND project_id = ?",
 );
-export function closeTask(id: string): void {
-  _closeTask.run(Date.now(), id);
+export function closeTask(id: string, projectId: string): void {
+  _closeTask.run(Date.now(), id, projectId);
 }
 
 const _updateTask = db.prepare(
-  'UPDATE tasks SET status = COALESCE(?, status), claimed_by = COALESCE(?, claimed_by) WHERE id = ?',
+  'UPDATE tasks SET status = COALESCE(?, status), claimed_by = COALESCE(?, claimed_by) WHERE id = ? AND project_id = ?',
 );
-export function updateTask(id: string, opts: { status?: string; claim?: boolean }): void {
+export function updateTask(id: string, opts: { status?: string; claim?: boolean }, projectId: string): void {
   const newStatus = opts.claim ? 'in_progress' : (opts.status ?? null);
   const claimedBy = opts.claim ? 'orchestrator' : null;
-  _updateTask.run(newStatus, claimedBy, id);
+  _updateTask.run(newStatus, claimedBy, id, projectId);
 }
 
 // ── Memories ──────────────────────────────────────────────────────────────────
@@ -425,6 +433,10 @@ const _listMemories = db.prepare<[string], Memory>(
 export function listMemories(projectId: string): Memory[] { return _listMemories.all(projectId); }
 
 // ── Task context prime ────────────────────────────────────────────────────────
+
+function sanitizeMd(s: string): string {
+  return s.replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ');
+}
 
 export function generatePrimeContext(projectId: string): string {
   const tasks = listAllTasks(projectId);
@@ -444,7 +456,7 @@ export function generatePrimeContext(projectId: string): string {
     for (const task of openTasks) {
       const parents = getTaskParents(task.id);
       const blockedBy = parents.length > 0 ? parents.join(', ') : '—';
-      lines.push(`| ${task.id} | ${task.title} | ${task.status} | ${blockedBy} |`);
+      lines.push(`| ${task.id} | ${sanitizeMd(task.title)} | ${task.status} | ${blockedBy} |`);
     }
     lines.push('');
   }
@@ -452,13 +464,13 @@ export function generatePrimeContext(projectId: string): string {
   const closedTasks = tasks.filter((t) => t.status === 'closed');
   if (closedTasks.length > 0) {
     lines.push(`### Completed Tasks (${closedTasks.length})\n`);
-    lines.push(closedTasks.map((t) => `- [x] ${t.id} — ${t.title}`).join('\n'));
+    lines.push(closedTasks.map((t) => `- [x] ${t.id} — ${sanitizeMd(t.title)}`).join('\n'));
     lines.push('');
   }
 
   if (mems.length > 0) {
     lines.push('### Memories\n');
-    for (const mem of mems) lines.push(`- ${mem.note}`);
+    for (const mem of mems) lines.push(`- ${sanitizeMd(mem.note)}`);
     lines.push('');
   }
 

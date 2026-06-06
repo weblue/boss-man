@@ -3,24 +3,19 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { getProject } from '../db.js';
+import { readFileFromGit } from '../git-utils.js';
 
 const router = new Hono();
 
-/**
- * Allowable spec filenames: letters, digits, hyphens, underscores, dots — no path separators.
- * This replaces the old hardcoded ALLOWED_SPEC_FILES set so research-*.md files are also readable.
- */
+// Safe spec filename: alphanumerics/._- only, no path separators. Allows research-*.md.
 const SAFE_FILENAME = /^[a-zA-Z0-9._-]+\.md$/;
 
 function specDir(repoPath: string): string {
   return join(repoPath, '.spec');
 }
 
-/**
- * Timestamp of the most recent commit touching this path, searching across ALL branches.
- * The orchestrator commits to a sandbox branch worktree, not to the project's default branch,
- * so `--all` is required to find those commits.
- */
+/** Most-recent commit time touching this path (--all: orchestrator commits to
+ *  worktree branches, not the default branch). */
 function lastGitCommitAt(repoPath: string, relativePath: string): number | null {
   try {
     const output = execFileSync(
@@ -34,16 +29,13 @@ function lastGitCommitAt(repoPath: string, relativePath: string): number | null 
   }
 }
 
-/**
- * List all .spec/*.md filenames that have ever been committed to any branch.
- * The orchestrator works in a Sandcastle worktree branch — the files are never
- * checked out into the project's main working tree, so readdirSync alone misses them.
- */
+/** All .spec/*.md filenames committed to any branch. Orchestrator works in a
+ *  worktree branch, never checked out to main, so readdirSync alone misses them. */
 function listSpecFilesInGit(repoPath: string): string[] {
   try {
     const raw = execFileSync(
       'git',
-      // --pretty= suppresses commit lines; --name-only lists touched files; --all spans every branch
+      // --pretty= drops commit lines; --name-only lists files; --all spans branches
       ['-C', repoPath, 'log', '--all', '--pretty=', '--name-only', '--', '.spec/*.md'],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     );
@@ -62,33 +54,12 @@ function listSpecFilesInGit(repoPath: string): string[] {
   }
 }
 
-/**
- * Read a spec file from the most recent commit that touched it across all branches.
- * Used as a fallback when the file is not in the main working tree.
- */
-function readSpecFromGit(repoPath: string, filename: string): string | null {
-  try {
-    const hash = execFileSync(
-      'git',
-      ['-C', repoPath, 'log', '--all', '-1', '--format=%H', '--', `.spec/${filename}`],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-    ).trim();
-    if (!hash) return null;
-    return execFileSync('git', ['-C', repoPath, 'show', `${hash}:.spec/${filename}`], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-  } catch {
-    return null;
-  }
-}
-
 // GET /api/projects/:id/specs — list all spec files
 router.get('/api/projects/:id/specs', (c) => {
   const project = getProject(c.req.param('id'));
   if (!project) return c.json({ error: 'Not found' }, 404);
 
-  // Merge files from the working tree (uncommitted edits) and git history (committed to any branch).
+  // Merge working-tree (uncommitted) + git history (any branch).
   const dir = specDir(project.repo_path);
   const fsFiles = existsSync(dir)
     ? readdirSync(dir).filter((f) => f.endsWith('.md') && SAFE_FILENAME.test(f))
@@ -115,14 +86,14 @@ router.get('/api/projects/:id/specs/:file', (c) => {
     return c.json({ error: 'Invalid filename' }, 400);
   }
 
-  // Prefer the live working-tree file (captures uncommitted orchestrator edits).
+  // Prefer the live working-tree file (uncommitted orchestrator edits).
   const filePath = join(specDir(project.repo_path), filename);
   if (existsSync(filePath)) {
     return c.text(readFileSync(filePath, 'utf8'));
   }
 
-  // Fall back to the most recent git commit for this file across all branches.
-  const content = readSpecFromGit(project.repo_path, filename);
+  // Fall back to most recent commit (any branch).
+  const content = readFileFromGit(project.repo_path, `.spec/${filename}`);
   if (content === null) return c.json({ error: 'File not found' }, 404);
   return c.text(content);
 });

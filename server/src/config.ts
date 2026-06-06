@@ -8,24 +8,16 @@ export const PROMPTS_DIR = join(__dirname, '..', '..', 'prompts');
 
 export const LITELLM_HOST = process.env.LITELLM_HOST ?? '127.0.0.1';
 export const LITELLM_PORT = process.env.LITELLM_PORT ?? '4000';
-export const LITELLM_MASTER_KEY =
-  process.env.LITELLM_MASTER_KEY ?? 'sk-boss-man-master-key-change-me';
-export const LITELLM_API_KEY =
-  process.env.LITELLM_API_KEY ?? LITELLM_MASTER_KEY;
+export const LITELLM_MASTER_KEY = process.env.LITELLM_MASTER_KEY ?? '';
+export const LITELLM_API_KEY = process.env.LITELLM_API_KEY ?? LITELLM_MASTER_KEY;
 export const CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '';
 
 /**
- * Boot-time authentication mode set by start.sh.
- *
- * 'claude'  — All tiers use native Claude models. claude-code is locked as the
- *             agent and NO ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY are injected
- *             into the sandbox, so claude-code authenticates directly through
- *             the Claude subscription (~/.claude or CLAUDE_CODE_OAUTH_TOKEN).
- *
- * 'litellm' — All tiers route through the LiteLLM proxy (local models, OpenAI,
- *             etc.). Both ANTHROPIC_BASE_URL/KEY and OPENAI_BASE_URL/KEY are
- *             injected pointing at LiteLLM, so any harness (claude-code, codex,
- *             opencode, …) can route through the proxy. Agent is unrestricted.
+ * Boot-time auth mode (set by start.sh).
+ * 'claude'  — agent locked to claude-code; no ANTHROPIC_BASE_URL/KEY injected →
+ *             claude-code auths via subscription (~/.claude or OAuth token).
+ * 'litellm' — all calls route through LiteLLM proxy; ANTHROPIC+OPENAI base/key
+ *             injected → any harness can use the proxy. Agent unrestricted.
  */
 export const BOSS_MAN_AUTH_MODE: 'claude' | 'litellm' = (() => {
   const raw = process.env.BOSS_MAN_AUTH_MODE;
@@ -37,8 +29,7 @@ export const BOSS_MAN_AUTH_MODE: 'claude' | 'litellm' = (() => {
   return raw === 'litellm' ? 'litellm' : 'claude';
 })();
 
-// CLAUDE_CODE_AUTH_MODE drives credential mounting in runner.ts.
-// Derived from BOSS_MAN_AUTH_MODE; can be overridden via .env if needed.
+// Drives credential mounting in runner.ts. Derived from BOSS_MAN_AUTH_MODE; .env can override.
 export const CLAUDE_CODE_AUTH_MODE: 'login' | 'litellm' =
   (process.env.CLAUDE_CODE_AUTH_MODE as 'login' | 'litellm' | undefined)
   ?? (BOSS_MAN_AUTH_MODE === 'litellm' ? 'litellm' : 'login');
@@ -104,30 +95,26 @@ export function defaultModelForRole(role: string): string {
 }
 
 export function resolveClaudeCodeModel(modelOrTier: string, role: string): string {
+  // Accept either a tier key ('high') or a LiteLLM tier alias ('boss-man/high').
   const roleTier = ROLE_TIERS[role] ?? 'medium';
-  const tierEntry = Object.entries(MODEL_TIERS).find(([, value]) => value === modelOrTier);
-  const tier = (modelOrTier in MODEL_TIERS ? modelOrTier : tierEntry?.[0]) as ModelTier | undefined;
-  return tier ? CLAUDE_CODE_MODEL_TIERS[tier] : CLAUDE_CODE_MODEL_TIERS[roleTier] ?? modelOrTier;
+  const reverseMatch = Object.entries(MODEL_TIERS).find(([, value]) => value === modelOrTier);
+  const tier = (modelOrTier in MODEL_TIERS ? modelOrTier : reverseMatch?.[0]) as ModelTier | undefined;
+  return tier ? CLAUDE_CODE_MODEL_TIERS[tier] : CLAUDE_CODE_MODEL_TIERS[roleTier];
 }
 
 export function claudeAuthContainerEnv(provider: ClaudeAuthProvider): Record<string, string> {
   if (provider === 'litellm') {
-    // LiteLLM mode: route all LLM calls through the proxy.
-    // Both ANTHROPIC and OPENAI env vars are set to the same LiteLLM endpoint
-    // so that any harness (claude-code, codex, opencode, pi, …) can find the
-    // correct base URL regardless of its convention.
+    // Both ANTHROPIC + OPENAI vars point at LiteLLM so any harness finds its base URL.
     return {
       ANTHROPIC_BASE_URL: `http://host.docker.internal:${LITELLM_PORT}`,
       ANTHROPIC_API_KEY: LITELLM_API_KEY,
       OPENAI_BASE_URL: `http://host.docker.internal:${LITELLM_PORT}/v1`,
       OPENAI_API_KEY: LITELLM_API_KEY,
-      // TODO: add env vars for any additional harness (pi, etc.) when configured
+      // TODO: add vars for extra harnesses (pi, etc.) when configured
     };
   }
 
-  // Claude mode: do NOT set ANTHROPIC_BASE_URL or ANTHROPIC_API_KEY.
-  // claude-code authenticates directly via ~/.claude or CLAUDE_CODE_OAUTH_TOKEN,
-  // using the Claude subscription rather than API key billing.
+  // Claude mode: no base/key vars → claude-code uses subscription auth, not API billing.
   return CLAUDE_CODE_OAUTH_TOKEN ? { CLAUDE_CODE_OAUTH_TOKEN } : {};
 }
 

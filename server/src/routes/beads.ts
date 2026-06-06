@@ -1,7 +1,6 @@
 /**
- * Beads-compatible task/memory API — backed by SQLite (runs.db).
- * Replaces the former bd CLI proxy that required a separate Dolt container.
- * Same URL surface preserved so existing callers continue to work.
+ * Beads-compatible task/memory API, backed by SQLite (runs.db).
+ * Replaces the old bd CLI/Dolt proxy; same URL surface for existing callers.
  */
 import { Hono } from 'hono';
 import {
@@ -27,53 +26,51 @@ router.get('/api/beads/prime', (c) => {
 });
 
 // POST /api/beads/create — create a new task
-router.post('/api/beads/create', (c) => {
-  return c.req.json().then((body) => {
-    if (!body?.description) return c.json({ error: 'description is required' }, 400);
-    const projectId: string = body.projectId ?? '';
-    if (!projectId) return c.json({ error: 'projectId is required' }, 400);
-    const id = randomTaskId();
-    insertTask({
-      id,
-      project_id: projectId,
-      title: body.description as string,
-      description: (body.details as string | undefined) ?? null,
-      status: 'open',
-      created_at: Date.now(),
-    });
-    return c.json({ id, output: `task_id: ${id}\nCreated task ${id}: ${body.description}` });
-  }).catch(() => c.json({ error: 'invalid JSON body' }, 400));
+router.post('/api/beads/create', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body?.description) return c.json({ error: 'description is required' }, 400);
+  const projectId: string = body.projectId ?? '';
+  if (!projectId) return c.json({ error: 'projectId is required' }, 400);
+  const id = randomTaskId();
+  insertTask({
+    id,
+    project_id: projectId,
+    title: body.description as string,
+    description: (body.details as string | undefined) ?? null,
+    status: 'open',
+    created_at: Date.now(),
+  });
+  return c.json({ id, output: `task_id: ${id}\nCreated task ${id}: ${body.description}` });
 });
 
 // POST /api/beads/dep — add a dependency between tasks
-router.post('/api/beads/dep', (c) => {
-  return c.req.json().then((body) => {
-    if (!body?.child || !body?.parent) {
-      return c.json({ error: 'child and parent are required' }, 400);
-    }
-    addTaskDep(body.child as string, body.parent as string);
-    return c.json({ output: `Dependency added: ${body.child} blocked by ${body.parent}` });
-  }).catch(() => c.json({ error: 'invalid JSON body' }, 400));
+router.post('/api/beads/dep', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body?.child || !body?.parent) return c.json({ error: 'child and parent are required' }, 400);
+  const projectId: string = body.projectId ?? '';
+  if (!projectId) return c.json({ error: 'projectId is required' }, 400);
+  addTaskDep(body.child as string, body.parent as string, projectId);
+  return c.json({ output: `Dependency added: ${body.child} blocked by ${body.parent}` });
 });
 
 // POST /api/beads/complete — mark a task complete (closed)
-router.post('/api/beads/complete', (c) => {
-  return c.req.json().then((body) => {
-    if (!body?.id) return c.json({ error: 'id is required' }, 400);
-    closeTask(body.id as string);
-    return c.json({ output: `Closed task ${body.id}` });
-  }).catch(() => c.json({ error: 'invalid JSON body' }, 400));
+router.post('/api/beads/complete', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body?.id) return c.json({ error: 'id is required' }, 400);
+  const projectId: string = body.projectId ?? '';
+  if (!projectId) return c.json({ error: 'projectId is required' }, 400);
+  closeTask(body.id as string, projectId);
+  return c.json({ output: `Closed task ${body.id}` });
 });
 
 // POST /api/beads/remember — store a persistent memory note
-router.post('/api/beads/remember', (c) => {
-  return c.req.json().then((body) => {
-    if (!body?.note) return c.json({ error: 'note is required' }, 400);
-    const projectId: string = body.projectId ?? '';
-    if (!projectId) return c.json({ error: 'projectId is required' }, 400);
-    insertMemory(projectId, body.note as string);
-    return c.json({ output: `Memory stored: ${body.note}` });
-  }).catch(() => c.json({ error: 'invalid JSON body' }, 400));
+router.post('/api/beads/remember', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body?.note) return c.json({ error: 'note is required' }, 400);
+  const projectId: string = body.projectId ?? '';
+  if (!projectId) return c.json({ error: 'projectId is required' }, 400);
+  insertMemory(projectId, body.note as string);
+  return c.json({ output: `Memory stored: ${body.note}` });
 });
 
 // GET /api/beads/tasks — list all tasks for a project (used by UI task board)
@@ -104,15 +101,16 @@ router.get('/api/beads/unblocked', (c) => {
 });
 
 // POST /api/beads/update — update task status / claim
-router.post('/api/beads/update', (c) => {
-  return c.req.json().then((body) => {
-    if (!body?.id) return c.json({ error: 'id is required' }, 400);
-    updateTask(body.id as string, {
-      status: body.status as string | undefined,
-      claim: body.claim as boolean | undefined,
-    });
-    return c.json({ output: `Updated task ${body.id}` });
-  }).catch(() => c.json({ error: 'invalid JSON body' }, 400));
+router.post('/api/beads/update', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body?.id) return c.json({ error: 'id is required' }, 400);
+  const projectId: string = body.projectId ?? '';
+  if (!projectId) return c.json({ error: 'projectId is required' }, 400);
+  updateTask(body.id as string, {
+    status: typeof body.status === 'string' ? body.status : undefined,
+    claim: body.claim === true,
+  }, projectId);
+  return c.json({ output: `Updated task ${body.id}` });
 });
 
 export default router;
