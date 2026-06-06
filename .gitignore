@@ -4,6 +4,7 @@ dist/
 .env
 .server.pid
 .ui.pid
+nginx/.current.conf
 *.bak
 .sandcastle/
 .DS_Store

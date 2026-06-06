@@ -34,7 +34,6 @@ done
 [[ ! -e /dev/tty ]] && NONINTERACTIVE=true   # CI / piped input
 
 SERVER_PID=""
-UI_PID=""
 
 cleanup() {
   local code=$?
@@ -42,12 +41,9 @@ cleanup() {
   if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
     kill -TERM "$SERVER_PID" 2>/dev/null || true
   fi
-  if [[ -n "${UI_PID:-}" ]] && kill -0 "$UI_PID" 2>/dev/null; then
-    kill -TERM "$UI_PID" 2>/dev/null || true
-  fi
   [[ -n "${SERVER_PID:-}" ]] && wait "$SERVER_PID" 2>/dev/null || true
-  [[ -n "${UI_PID:-}" ]] && wait "$UI_PID" 2>/dev/null || true
-  rm -f .server.pid .ui.pid
+  docker rm -f boss-man-nginx 2>/dev/null || true
+  rm -f .server.pid
   if [[ "$code" -eq 130 || "$code" -eq 143 ]]; then
     echo ""
     ok "Boss Man Dashboard stopped"
@@ -68,7 +64,8 @@ node_version=$(node --version | sed 's/v//' | cut -d. -f1)
 
 LITELLM_PORT="${LITELLM_PORT:-4000}"
 LANGFUSE_PORT="${LANGFUSE_PORT:-3002}"
-SERVER_PORT="${SERVER_PORT:-3001}"
+SERVER_PORT="${SERVER_PORT:-8771}"
+UI_PORT="${UI_PORT:-8770}"
 SANDBOX_IMAGE="${SANDBOX_IMAGE:-boss-man:sandbox}"
 
 # ── Model Profile ─────────────────────────────────────────────────────────────
@@ -320,11 +317,10 @@ else
   die "Sandbox image ${SANDBOX_IMAGE} missing — run ./install.sh to build it"
 fi
 
-# ── Kill stale server processes ───────────────────────────────────────────────
+# ── Kill stale processes / containers ────────────────────────────────────────
 
-for port in "${SERVER_PORT}" 5173; do
-  lsof -ti ":$port" 2>/dev/null | xargs -r kill -TERM 2>/dev/null || true
-done
+docker rm -f boss-man-nginx 2>/dev/null || true
+lsof -ti ":${SERVER_PORT}" 2>/dev/null | xargs -r kill -TERM 2>/dev/null || true
 
 # ── API Server ────────────────────────────────────────────────────────────────
 
@@ -345,13 +341,32 @@ curl -sf "http://localhost:${SERVER_PORT}/health" >/dev/null 2>&1 \
   && ok "API server at http://localhost:${SERVER_PORT}" \
   || warn "API server not yet responding at :${SERVER_PORT} — check logs if it fails to start"
 
-# ── UI ────────────────────────────────────────────────────────────────────────
-(
-  cd ui
-  ../node_modules/.bin/vite --host 0.0.0.0
-) &
-UI_PID=$!
-echo "$UI_PID" > .ui.pid
+# ── UI — build then serve with nginx ─────────────────────────────────────────
+
+echo "── Building UI ──"
+(cd ui && ../node_modules/.bin/vite build --logLevel warn)
+ok "UI built → ui/dist/"
+
+echo "── Starting nginx ──"
+# Render the nginx config template: substitute __SERVER_PORT__ with the actual port.
+sed "s/__SERVER_PORT__/${SERVER_PORT}/g" "$SCRIPT_DIR/nginx/nginx.conf" \
+  > "$SCRIPT_DIR/nginx/.current.conf"
+docker run -d \
+  --name boss-man-nginx \
+  -p "${UI_PORT}:80" \
+  -v "$SCRIPT_DIR/ui/dist:/usr/share/nginx/html:ro" \
+  -v "$SCRIPT_DIR/nginx/.current.conf:/etc/nginx/conf.d/default.conf:ro" \
+  --add-host=host.docker.internal:host-gateway \
+  nginx:alpine >/dev/null
+
+echo "Waiting for nginx to be ready..."
+for i in $(seq 1 15); do
+  curl -sf "http://localhost:${UI_PORT}/health" >/dev/null 2>&1 && break
+  sleep 1
+done
+curl -sf "http://localhost:${UI_PORT}/health" >/dev/null 2>&1 \
+  && ok "nginx at http://localhost:${UI_PORT}" \
+  || warn "nginx not yet responding at :${UI_PORT} — check: docker logs boss-man-nginx"
 
 # Banner (inner content = 54 chars between the ║ bookends)
 MODE_DESC="${AUTH_MODE} ($([ "$AUTH_MODE" == "claude" ] && echo "subscription" || echo "LiteLLM proxy"))"
@@ -363,7 +378,7 @@ echo "╔═══════════════════════�
 echo "║  Boss Man Dashboard running                          ║"
 echo "║                                                      ║"
 printf "║  API:      http://localhost:%-26s║\n" "${SERVER_PORT}"
-printf "║  UI:       http://localhost:%-26s║\n" "5173"
+printf "║  UI:       http://localhost:%-26s║\n" "${UI_PORT}"
 printf "║  LiteLLM:  http://localhost:%-4s (%s)%-$((15 - ${#LITELLM_SOURCE}))s║\n" "${LITELLM_PORT}" "${LITELLM_SOURCE}" ""
 printf "║  Langfuse: http://localhost:%-26s║\n" "${LANGFUSE_PORT}"
 echo "║                                                      ║"
@@ -373,4 +388,4 @@ printf "║  Agent:    %-42s║\n" "$AGENT_DESC"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
 echo "Press Ctrl+C or run ./stop.sh to stop."
-wait "$SERVER_PID" "$UI_PID"
+wait "$SERVER_PID"

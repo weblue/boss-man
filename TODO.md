@@ -49,8 +49,8 @@ Goal: replace static `boss-man/high|medium|low` tier aliases with intelligent ru
 
 ### Phase 11 - auth/security
 
-- [ ] Session auth (simple API key gate on all `/api/*` routes) for network exposure
-- [ ] **CORS** — restrict `Access-Control-Allow-Origin` to localhost origins only (security hardening; low priority for trusted-network deployments but required before any network exposure)
+- [x] Session auth — `LITELLM_MASTER_KEY` gate on all `/api/*` routes; UI shows a login screen on first visit and on 401; EventSource uses `?apiKey=` query param (browsers can't set SSE headers)
+- [x] **CORS** — restrict `Access-Control-Allow-Origin` to localhost origins only (already implemented in `server/src/index.ts`)
 
 ---
 

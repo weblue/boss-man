@@ -8,6 +8,9 @@ cd "$SCRIPT_DIR"
 CLEAN_CONTAINERS=false
 STOP_INFRA=false
 
+# Load env for port vars (best-effort — fall back to defaults if .env is absent)
+[[ -f .env ]] && set -a && source .env && set +a || true
+
 for arg in "$@"; do
   case "$arg" in
     --clean-containers) CLEAN_CONTAINERS=true ;;
@@ -23,9 +26,9 @@ kill_port() {
 
 echo "Stopping dev servers..."
 [[ -f .server.pid ]] && kill "$(cat .server.pid)" 2>/dev/null || true; rm -f .server.pid
-[[ -f .ui.pid ]]     && kill "$(cat .ui.pid)"     2>/dev/null || true; rm -f .ui.pid
-kill_port 3001
-kill_port 5173
+docker rm -f boss-man-nginx 2>/dev/null || true
+kill_port "${SERVER_PORT:-8771}"
+kill_port "${UI_PORT:-8770}"
 echo "Dev servers stopped"
 
 if [[ "$CLEAN_CONTAINERS" == "true" ]]; then

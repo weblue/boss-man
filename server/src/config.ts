@@ -51,7 +51,10 @@ export function resolveClaudeAuthProvider(provider?: string | null): ClaudeAuthP
   return BOSS_MAN_AUTH_MODE === 'litellm' ? 'litellm' : 'anthropic';
 }
 
-export const SERVER_PORT = parseInt(process.env.SERVER_PORT ?? '3001', 10);
+export const SERVER_PORT = parseInt(process.env.SERVER_PORT ?? '8771', 10);
+// Optional external origin allowed through CORS (e.g. https://mediachung.us).
+// Localhost is always allowed. Leave empty for localhost-only access.
+export const BOSS_MAN_ALLOWED_ORIGIN = process.env.BOSS_MAN_ALLOWED_ORIGIN ?? '';
 export const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE ?? 'boss-man:sandbox';
 export const DEFAULT_AGENT_PROVIDER = process.env.DEFAULT_AGENT_PROVIDER ?? 'claude-code';
 export const DEFAULT_AGENT_MODEL = process.env.DEFAULT_AGENT_MODEL;

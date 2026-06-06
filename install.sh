@@ -123,7 +123,21 @@ echo "── Installing Node dependencies ──"
 npm install
 ok "Node dependencies installed"
 
-# ── 5. Build sandbox Docker image ─────────────────────────────────────────────
+# ── 5. Build UI ───────────────────────────────────────────────────────────────
+
+echo ""
+echo "── Building UI (ui/dist/) ──"
+npm run build --workspace=ui
+ok "UI built"
+
+# ── 6. Pull nginx Docker image ────────────────────────────────────────────────
+
+echo ""
+echo "── Pulling nginx Docker image ──"
+docker pull nginx:alpine
+ok "nginx:alpine ready"
+
+# ── 7. Build sandbox Docker image ─────────────────────────────────────────────
 
 echo ""
 echo "── Building sandbox Docker image (boss-man:sandbox) ──"

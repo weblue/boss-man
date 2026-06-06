@@ -8,13 +8,13 @@ import {
   Bot,
   Check,
   ChevronDown,
-  Clock3,
   GitMerge,
   FileText,
   FolderGit2,
   History,
   KanbanSquare,
   Loader2,
+  Lock,
   MessageSquare,
   Plus,
   RefreshCw,
@@ -27,10 +27,12 @@ import {
 } from 'lucide-react';
 import {
   cancelRun,
+  clearApiKey,
   compactSession,
   createProject,
   deleteProject,
   deleteSession,
+  getApiKey,
   mergeToMain,
   patchSession,
   getProject,
@@ -46,6 +48,8 @@ import {
   listTasks,
   readSpec,
   replyToSession,
+  setApiKey,
+  sseUrl,
   startSession,
 } from './api';
 import type { AgentEvent, BeadsTask, Project, Run, Session } from './types';
@@ -120,7 +124,9 @@ function useEventStream(path: string | null, onEvent: (event: AgentEvent) => voi
 
   useEffect(() => {
     if (!path) return;
-    const source = new EventSource(path);
+    // Append the API key as a query param — browser EventSource cannot set
+    // custom headers, so the key must travel in the URL for SSE endpoints.
+    const source = new EventSource(sseUrl(path));
 
     source.onmessage = (message) => {
       try {
@@ -1507,7 +1513,75 @@ function SpecTab({ project }: { project: Project }) {
   );
 }
 
-export default function App() {
+// ── Login screen ─────────────────────────────────────────────────────────────
+
+function LoginScreen({ onLogin }: { onLogin: (key: string) => void }) {
+  const [key, setKey] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const trimmed = key.trim();
+    if (!trimmed) return;
+    setLoading(true);
+    setError('');
+    try {
+      // Temporarily store the key so authHeaders() picks it up,
+      // then validate by hitting a protected endpoint.
+      setApiKey(trimmed);
+      await listProjects();
+      onLogin(trimmed);
+    } catch {
+      clearApiKey();
+      setError('Invalid key — check LITELLM_MASTER_KEY in your .env file.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex h-screen items-center justify-center bg-base font-mono">
+      <div className="w-full max-w-sm rounded border border-border bg-surface p-8">
+        <div className="mb-6 flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded border border-border bg-elevated">
+            <Lock size={16} className="text-text-muted" />
+          </div>
+          <div>
+            <div className="text-sm font-semibold text-text-primary">boss-man</div>
+            <div className="text-xs text-text-muted">Enter your API key to continue</div>
+          </div>
+        </div>
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          <input
+            className="field"
+            type="password"
+            placeholder="sk-boss-man-..."
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            autoFocus
+            disabled={loading}
+          />
+          {error && <p className="text-xs text-red">{error}</p>}
+          <button
+            className="inline-flex h-9 items-center justify-center gap-2 rounded border border-blue/60 bg-blue/10 px-4 text-xs text-blue transition-colors hover:bg-blue/20 disabled:opacity-50"
+            disabled={loading || !key.trim()}
+          >
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <Bot size={14} />}
+            Unlock
+          </button>
+        </form>
+        <p className="mt-4 text-[10px] text-text-muted">
+          Key is stored in browser localStorage and sent with every request.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ── Main app (shown once authenticated) ──────────────────────────────────────
+
+function MainApp() {
   const projectsQuery = useQuery({
     queryKey: ['projects'],
     queryFn: listProjects,
@@ -1532,4 +1606,35 @@ export default function App() {
       )}
     </div>
   );
+}
+
+// ── Auth gate ─────────────────────────────────────────────────────────────────
+
+export default function App() {
+  const queryClient = useQueryClient();
+  const [apiKey, setApiKeyState] = useState<string | null>(() => getApiKey());
+
+  // Listen for 401 responses fired from api.ts and force re-login.
+  useEffect(() => {
+    const handle = () => {
+      clearApiKey();
+      setApiKeyState(null);
+      queryClient.clear();
+    };
+    window.addEventListener('boss-man:unauthorized', handle);
+    return () => window.removeEventListener('boss-man:unauthorized', handle);
+  }, [queryClient]);
+
+  if (!apiKey) {
+    return (
+      <LoginScreen
+        onLogin={(key) => {
+          setApiKeyState(key);
+          queryClient.clear();
+        }}
+      />
+    );
+  }
+
+  return <MainApp />;
 }
