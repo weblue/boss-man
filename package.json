@@ -2,7 +2,7 @@
   "name": "boss-man-dashboard",
   "private": true,
   "engines": {
-    "node": ">=22 <25"
+    "node": ">=22"
   },
   "workspaces": [
     "server",

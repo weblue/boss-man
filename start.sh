@@ -317,6 +317,18 @@ else
   die "Sandbox image ${SANDBOX_IMAGE} missing — run ./install.sh to build it"
 fi
 
+# ── Native module check ───────────────────────────────────────────────────────
+
+echo "── Checking native modules ──"
+if ! node -e "require('./node_modules/better-sqlite3')" >/dev/null 2>&1; then
+  warn "better-sqlite3 binary mismatch for Node.js $(node --version) — rebuilding..."
+  npm rebuild better-sqlite3 >/dev/null 2>&1 \
+    && ok "better-sqlite3 rebuilt" \
+    || die "Failed to rebuild better-sqlite3. Run ./install.sh to fully reinstall."
+else
+  ok "better-sqlite3 ok"
+fi
+
 # ── Kill stale processes / containers ────────────────────────────────────────
 
 docker rm -f boss-man-nginx 2>/dev/null || true
