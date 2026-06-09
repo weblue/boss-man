@@ -52,3 +52,10 @@ Cancel after N/M iters loses captured state. Fix: SDK exposes per-iteration sess
 
 **#7 Structured agent event model** `[SDK]` · observability only
 Expand events beyond `text`/`toolCall` (assistant_text_delta, tool_started/stdout/stderr/result, file_changed, diff_available, approval_requested, run_status_changed, error, done). Blocked: Sandcastle only emits `text`/`toolCall`.
+
+
+remove prismodev package and just add agent ignore file and find best practices
+
+investigate slowness on main UI
+
+prioritize sandbox sdk updates that reduce token usage + improve performance
