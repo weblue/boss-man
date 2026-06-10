@@ -3,6 +3,7 @@ import {
   claudeCode,
   codex,
   opencode,
+  getAbortMetadata,
   type AgentProvider,
   type AgentStreamEvent,
   type IterationUsage,
@@ -278,10 +279,8 @@ export async function startRun(options: StartRunOptions): Promise<void> {
 
   const mcpHookCommand = buildMcpHookCommand(options.agentProvider ?? 'claude-code');
 
-  // Liveness signals: Sandcastle's onAgentStreamEvent only fires on completed
-  // `text`/`toolCall` messages, so the UI sees nothing during the (often multi-
-  // minute) thinking/resume/tool-execution gaps and looks frozen. Emit ephemeral
-  // status events at the lifecycle points we control plus a periodic heartbeat.
+  // Liveness signals: forward Sandcastle stream events to run subscribers, plus
+  // emit lifecycle statuses and a periodic heartbeat for silent gaps.
   const runStartedAt = Date.now();
   let lastActivityAt = runStartedAt;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -346,6 +345,11 @@ export async function startRun(options: StartRunOptions): Promise<void> {
             pushEvent(options.id, { type: 'text', text: event.message, iteration: event.iteration, timestamp });
           } else if (event.type === 'toolCall') {
             pushEvent(options.id, { type: 'toolCall', toolName: event.name, text: event.formattedArgs, iteration: event.iteration, timestamp });
+          } else if (event.type === 'result') {
+            pushEvent(options.id, { type: 'result', text: event.result, iteration: event.iteration, timestamp });
+          } else if (event.type === 'sessionId') {
+            // Persist mid-run so cancellations can resume warm (P8 #4 safety net).
+            updateRun(options.id, { last_session_id: event.sessionId });
           }
         },
       },
@@ -382,7 +386,13 @@ export async function startRun(options: StartRunOptions): Promise<void> {
     pushEvent(options.id, { type: 'done', timestamp: new Date().toISOString() });
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') {
-      updateRun(options.id, { status: 'cancelled', completed_at: Date.now() });
+      const abortMeta = getAbortMetadata(err);
+      const lastSession = abortMeta?.iterations.at(-1)?.sessionId ?? null;
+      updateRun(options.id, {
+        status: 'cancelled',
+        completed_at: Date.now(),
+        ...(lastSession ? { last_session_id: lastSession } : {}),
+      });
     } else {
       const msg = err instanceof Error ? err.message : String(err);
       const error = runFailureMessage(msg);

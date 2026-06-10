@@ -6,7 +6,7 @@ export interface AgentEvent {
   /** Stable sequence number (terminal_events row id). Set on persisted events and
    *  on live events after pushEvent. Clients dedupe replay/live overlap by it. */
   seq?: number;
-  type: 'text' | 'toolCall' | 'toolResult' | 'iteration' | 'usage' | 'status' | 'error' | 'done';
+  type: 'text' | 'toolCall' | 'toolResult' | 'iteration' | 'usage' | 'status' | 'error' | 'done' | 'result';
   text?: string;
   toolName?: string;
   iteration?: number;

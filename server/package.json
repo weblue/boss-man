@@ -10,7 +10,7 @@
     "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@ai-hero/sandcastle": "latest",
+    "@ai-hero/sandcastle": "file:../../sandcastle",
     "@hono/node-server": "^1.13.0",
     "better-sqlite3": "^11.0.0",
     "hono": "^4.12.23",

@@ -17,7 +17,7 @@
     "stop": "./stop.sh"
   },
   "devDependencies": {
-    "@ai-hero/sandcastle": "^0.7.0",
+    "@ai-hero/sandcastle": "file:../sandcastle",
     "tsx": "^4.22.4"
   }
 }
