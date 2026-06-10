@@ -177,8 +177,8 @@ export async function patchSession(
   );
 }
 
-export async function compactSession(sessionId: string): Promise<{ session: Session; run: Run }> {
-  return json<{ session: Session; run: Run }>(
+export async function compactSession(sessionId: string): Promise<{ session: Session }> {
+  return json<{ session: Session }>(
     await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/compact`, {
       method: 'POST',
       headers: authHeaders(),

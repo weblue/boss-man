@@ -50,10 +50,6 @@ export const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE ?? 'boss-man:sandbox';
 export const DEFAULT_AGENT_PROVIDER = process.env.DEFAULT_AGENT_PROVIDER ?? 'claude-code';
 export const DEFAULT_AGENT_MODEL = process.env.DEFAULT_AGENT_MODEL;
 
-export const LANGFUSE_SECRET_KEY = process.env.LANGFUSE_SECRET_KEY ?? '';
-export const LANGFUSE_PUBLIC_KEY = process.env.LANGFUSE_PUBLIC_KEY ?? '';
-export const LANGFUSE_HOST = process.env.LANGFUSE_HOST ?? 'http://localhost:3000';
-
 // Model tier → LiteLLM alias mapping
 export const MODEL_TIERS = {
   high: 'boss-man/high',
@@ -99,7 +95,14 @@ export function resolveClaudeCodeModel(modelOrTier: string, role: string): strin
   const roleTier = ROLE_TIERS[role] ?? 'medium';
   const reverseMatch = Object.entries(MODEL_TIERS).find(([, value]) => value === modelOrTier);
   const tier = (modelOrTier in MODEL_TIERS ? modelOrTier : reverseMatch?.[0]) as ModelTier | undefined;
-  return tier ? CLAUDE_CODE_MODEL_TIERS[tier] : CLAUDE_CODE_MODEL_TIERS[roleTier];
+  if (tier) return CLAUDE_CODE_MODEL_TIERS[tier];
+  // Direct Claude model ids (e.g. 'claude-sonnet-4-6') pass through to claude-code.
+  // Anything else (LiteLLM-only models like 'local-worker') can't run on
+  // subscription auth — fall back to the role's tier.
+  if (modelOrTier.startsWith('claude') || ['opus', 'sonnet', 'haiku'].includes(modelOrTier)) {
+    return modelOrTier;
+  }
+  return CLAUDE_CODE_MODEL_TIERS[roleTier];
 }
 
 export function claudeAuthContainerEnv(provider: ClaudeAuthProvider): Record<string, string> {
@@ -121,5 +124,9 @@ export function claudeAuthContainerEnv(provider: ClaudeAuthProvider): Record<str
 // Base sandbox env — auth vars are added separately via claudeAuthContainerEnv.
 export const CONTAINER_ENV: Record<string, string> = {
   BOSS_MAN_API_URL: `http://host.docker.internal:${SERVER_PORT}`,
+  // Authenticates spawn-worker → /api/* through the non-loopback auth gate.
+  // (On Docker Desktop container traffic arrives as loopback and is exempt,
+  // but on Linux it arrives from the bridge network and needs the key.)
+  BOSS_MAN_API_KEY: LITELLM_MASTER_KEY,
   CLAUDE_CODE_UNSAFE_SKIP_PERMISSIONS: '1',
 };

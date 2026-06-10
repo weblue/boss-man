@@ -490,16 +490,29 @@ export function generatePrimeContext(projectId: string): string {
     lines.push('');
   }
 
+  // Caps: this context is injected into every orchestrator turn and task_prime
+  // call, so old closed tasks / memories must not grow it without bound.
+  const MAX_CLOSED_TASKS = 10;
+  const MAX_MEMORIES = 30;
+
   const closedTasks = tasks.filter((t) => t.status === 'closed');
   if (closedTasks.length > 0) {
+    const recent = closedTasks.slice(-MAX_CLOSED_TASKS);
     lines.push(`### Completed Tasks (${closedTasks.length})\n`);
-    lines.push(closedTasks.map((t) => `- [x] ${t.id} — ${sanitizeMd(t.title)}`).join('\n'));
+    if (closedTasks.length > recent.length) {
+      lines.push(`(${closedTasks.length - recent.length} older completed tasks omitted)`);
+    }
+    lines.push(recent.map((t) => `- [x] ${t.id} — ${sanitizeMd(t.title)}`).join('\n'));
     lines.push('');
   }
 
   if (mems.length > 0) {
+    const recent = mems.slice(-MAX_MEMORIES);
     lines.push('### Memories\n');
-    for (const mem of mems) lines.push(`- ${sanitizeMd(mem.note)}`);
+    if (mems.length > recent.length) {
+      lines.push(`(${mems.length - recent.length} older memories omitted)`);
+    }
+    for (const mem of recent) lines.push(`- ${sanitizeMd(mem.note)}`);
     lines.push('');
   }
 

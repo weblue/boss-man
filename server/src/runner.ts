@@ -327,6 +327,14 @@ export async function startRun(options: StartRunOptions): Promise<void> {
 
   const mcpHookCommand = buildMcpHookCommand(options.agentProvider ?? 'claude-code');
 
+  // The MCP configs above embed the API key and live in the git worktree — keep
+  // them out of version control (agents run `git add -A`). info/exclude resolves
+  // to the shared git dir, so this never touches the user's repo content.
+  const gitExcludeHookCommand =
+    `cd /workspace && ex="$(git rev-parse --git-path info/exclude)" && ` +
+    `mkdir -p "$(dirname "$ex")" && ` +
+    `printf '.mcp.json\\nopencode.json\\n.codex/\\n' >> "$ex" || true`;
+
   // Liveness signals: forward Sandcastle stream events to run subscribers, plus
   // emit lifecycle statuses and a periodic heartbeat for silent gaps.
   const runStartedAt = Date.now();
@@ -383,6 +391,8 @@ export async function startRun(options: StartRunOptions): Promise<void> {
             { command: 'rtk init -g --hook-only --auto-patch 2>/dev/null || true', timeoutMs: 10_000 },
             // MCP config so the agent reaches the boss-man server.
             { command: mcpHookCommand, timeoutMs: 5_000 },
+            // Keep key-bearing agent configs out of git.
+            { command: gitExcludeHookCommand, timeoutMs: 5_000 },
           ],
         },
       },

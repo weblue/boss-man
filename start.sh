@@ -137,6 +137,8 @@ emit_tier_block() {
       printf '    litellm_params:\n      model: openai/gpt-4o\n      api_key: os.environ/OPENAI_API_KEY\n\n';;
     gpt-4o-mini)
       printf '    litellm_params:\n      model: openai/gpt-4o-mini\n      api_key: os.environ/OPENAI_API_KEY\n\n';;
+    claude-*)
+      printf '    litellm_params:\n      model: anthropic/%s\n      api_key: os.environ/ANTHROPIC_API_KEY\n\n' "$label";;
   esac
 }
 
@@ -154,6 +156,14 @@ HDR
 
     if [[ "$AUTH_MODE" == "litellm" ]]; then
       printf '  # ── Tier aliases (LiteLLM profile, set at last boot) ─────────────────────\n'
+      emit_tier_block "boss-man/high"   "$PROFILE_HIGH"
+      emit_tier_block "boss-man/medium" "$PROFILE_MED"
+      emit_tier_block "boss-man/low"    "$PROFILE_LOW"
+    elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+      # Claude mode: agents auth via subscription, but server-side helpers (the
+      # rolling-summary fold) call boss-man/* through LiteLLM — back them with
+      # the Anthropic API when a key is available.
+      printf '  # ── Tier aliases (claude mode, API-key backed for server-side calls) ─────\n'
       emit_tier_block "boss-man/high"   "$PROFILE_HIGH"
       emit_tier_block "boss-man/medium" "$PROFILE_MED"
       emit_tier_block "boss-man/low"    "$PROFILE_LOW"

@@ -9,6 +9,7 @@ import {
   addTaskDep,
   closeTask,
   generatePrimeContext,
+  getProject,
   insertMemory,
   insertTask,
   listUnblockedTasks,
@@ -159,7 +160,10 @@ async function callTool(
   sessionId: string | undefined,
   projectId: string,
 ): Promise<ToolResult> {
-  if (TASK_TOOLS.has(name) && !projectId) return err('projectId missing from MCP URL');
+  if (TASK_TOOLS.has(name)) {
+    if (!projectId) return err('projectId missing from MCP URL');
+    if (!getProject(projectId)) return err(`unknown projectId: ${projectId}`);
+  }
 
   try {
     switch (name) {
@@ -200,7 +204,10 @@ async function callTool(
 
       case 'task_list_unblocked': {
         const tasks = listUnblockedTasks(projectId);
-        return ok(JSON.stringify(tasks, null, 2));
+        if (tasks.length === 0) return ok('No unblocked tasks.');
+        // Compact one-line format — this is called repeatedly in the execution
+        // loop; full JSON rows waste orchestrator tokens. task_prime has details.
+        return ok(tasks.map((t) => `${t.id} — ${t.title} (${t.status})`).join('\n'));
       }
 
       case 'task_remember': {

@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, existsSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { insertProject, listProjects, getProject, deleteProject, listRuns, isRunActive } from '../db.js';
@@ -32,6 +32,9 @@ venv/
 *.sqlite
 *.sqlite3
 .DS_Store
+.mcp.json
+opencode.json
+.codex/
 `;
 
 function seedGitignore(repoPath: string): void {
@@ -64,16 +67,25 @@ router.post('/api/projects', async (c) => {
     return c.json({ error: `Directory already exists: ${repoPath}` }, 409);
   }
 
+  if (repoUrl && (typeof repoUrl !== 'string' || repoUrl.startsWith('-'))) {
+    return c.json({ error: 'Invalid repoUrl' }, 400);
+  }
+
   mkdirSync(repoPath, { recursive: true });
 
-  if (repoUrl) {
-    if (typeof repoUrl !== 'string' || repoUrl.startsWith('-')) {
-      return c.json({ error: 'Invalid repoUrl' }, 400);
+  try {
+    if (repoUrl) {
+      // `--` stops a repoUrl like `--upload-pack=...` from being parsed as a flag.
+      // Async so a slow clone doesn't block the event loop (and every other request).
+      await execFileAsync('git', ['clone', '--', repoUrl, repoPath], { timeout: 300_000 });
+    } else {
+      await execFileAsync('git', ['init', repoPath], { timeout: 10_000 });
     }
-    // `--` stops a repoUrl like `--upload-pack=...` from being parsed as a flag.
-    execFileSync('git', ['clone', '--', repoUrl, repoPath], { stdio: 'inherit' });
-  } else {
-    execFileSync('git', ['init', repoPath], { stdio: 'inherit' });
+  } catch (err: unknown) {
+    // Remove the half-created directory so a retry doesn't hit the 409 above.
+    rmSync(repoPath, { recursive: true, force: true });
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ error: `git ${repoUrl ? 'clone' : 'init'} failed: ${msg}` }, 500);
   }
 
   seedGitignore(repoPath);
@@ -153,6 +165,12 @@ router.post('/api/projects/:id/merge', async (c) => {
     // Non-zero on conflicts or already-up-to-date.
     const msg = err instanceof Error ? err.message : String(err);
     if (!msg.includes('Already up to date') && !msg.includes('already up to date')) {
+      // Abort the half-merge so the repo isn't left with MERGE_HEAD/conflict markers.
+      try {
+        await execFileAsync('git', ['-C', project.repo_path, 'merge', '--abort'], { timeout: 10_000 });
+      } catch {
+        // No merge in progress (e.g. pre-merge failure) — nothing to abort.
+      }
       await popStash();
       return c.json({ error: msg }, 500);
     }

@@ -19,8 +19,12 @@
 
 set -euo pipefail
 
-API_URL="${BOSS_MAN_API_URL:-http://host.docker.internal:3001}"
+API_URL="${BOSS_MAN_API_URL:-http://host.docker.internal:8771}"
 PROJECT_ID="${BOSS_MAN_PROJECT_ID:-}"
+
+# Auth for the server's non-loopback gate (required on Linux, harmless on macOS).
+AUTH_ARGS=()
+[[ -n "${BOSS_MAN_API_KEY:-}" ]] && AUTH_ARGS=(-H "Authorization: Bearer $BOSS_MAN_API_KEY")
 
 ROLE=""
 PROMPT=""
@@ -84,7 +88,7 @@ PAYLOAD=$(jq -cn \
     taskId: (if $taskId != "" then $taskId else null end)
   }')
 
-RESPONSE=$(curl -sf -X POST "$API_URL/api/runs" \
+RESPONSE=$(curl -sf "${AUTH_ARGS[@]}" -X POST "$API_URL/api/runs" \
   -H "Content-Type: application/json" \
   -d "$PAYLOAD")
 
@@ -93,7 +97,8 @@ echo "$RUN_ID"
 
 if [[ "$WAIT" == "true" ]]; then
   while true; do
-    STATUS=$(curl -sf "$API_URL/api/runs/$RUN_ID" | jq -r '.status')
+    # `|| true` keeps a transient network/server hiccup from killing the wait.
+    STATUS=$(curl -sf "${AUTH_ARGS[@]}" "$API_URL/api/runs/$RUN_ID" | jq -r '.status' || true)
     case "$STATUS" in
       completed) exit 0 ;;
       failed)    echo "Worker $RUN_ID failed" >&2; exit 1 ;;

@@ -259,12 +259,86 @@ function StatusBadge({ status, pulse }: { status: string; pulse?: boolean }) {
   );
 }
 
-function ThinkingIndicator() {
+/** Re-renders consumers every `intervalMs` while enabled — for elapsed-time displays. */
+function useNow(intervalMs: number, enabled: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!enabled) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(timer);
+  }, [intervalMs, enabled]);
+  return now;
+}
+
+/** One-line, code-free gloss of a tool call: first line of args, truncated. */
+function toolCallSummary(event: AgentEvent): string {
+  const firstLine = (event.text ?? '').split('\n', 1)[0].trim();
+  return firstLine.length > 100 ? `${firstLine.slice(0, 100)}…` : firstLine;
+}
+
+function parseChangedFiles(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Always-on liveness strip for an active run. Shows the latest heartbeat/status
+ * text, the most recent tool action, and a ticking elapsed time — so a turn
+ * that's quietly blocked on a worker never looks hung.
+ */
+function RunActivityStrip({
+  run,
+  liveStatus,
+  lastTool,
+}: {
+  run: Run;
+  liveStatus: string | null;
+  lastTool: AgentEvent | undefined;
+}) {
+  const now = useNow(1000, true);
+  const elapsed = formatDuration(run.started_at ?? run.created_at, null);
+  void now; // re-render driver for `elapsed`
+  const toolLine = lastTool ? `${lastTool.toolName}: ${toolCallSummary(lastTool)}` : null;
   return (
-    <div className="flex items-center gap-1 pt-1">
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-muted [animation-delay:0ms]" />
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-muted [animation-delay:150ms]" />
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-muted [animation-delay:300ms]" />
+    <div className="mt-3 flex items-center gap-2 rounded border border-border/60 bg-elevated/40 px-2.5 py-1.5 text-xs text-text-muted">
+      <Loader2 size={12} className="shrink-0 animate-spin text-blue" />
+      <span className="min-w-0 flex-1 truncate">
+        {liveStatus ?? toolLine ?? 'Working…'}
+      </span>
+      <span className="shrink-0 tabular-nums text-[10px]">{elapsed}</span>
+    </div>
+  );
+}
+
+/** Compact changed-files row shown under a completed turn — the worktree delta. */
+function ChangedFilesRow({ files }: { files: string[] }) {
+  const [expanded, setExpanded] = useState(false);
+  if (files.length === 0) return null;
+  const shown = expanded ? files : files.slice(0, 6);
+  return (
+    <div className="mt-3 border-t border-border pt-2 text-[11px] text-text-muted">
+      <div className="mb-1 flex items-center gap-1.5">
+        <FolderGit2 size={11} className="shrink-0" />
+        <span>{files.length} file{files.length !== 1 ? 's' : ''} changed in worktree</span>
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {shown.map((f) => (
+          <span key={f} className="max-w-[260px] truncate rounded border border-border/60 bg-elevated px-1.5 py-0.5 font-mono text-[10px]">
+            {f}
+          </span>
+        ))}
+        {files.length > shown.length && (
+          <button className="rounded px-1.5 py-0.5 text-[10px] text-blue hover:underline" onClick={() => setExpanded(true)}>
+            +{files.length - shown.length} more
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -818,12 +892,9 @@ function ChatTab({ project }: { project: Project }) {
                           <ReactMarkdown className="markdown" rehypePlugins={[rehypeHighlight]}>{assistantText}</ReactMarkdown>
                         ) : run.error ? (
                           <div className="text-xs text-red">{run.error}</div>
-                        ) : (
-                          <div className="flex items-center gap-2 text-xs text-text-muted">
-                            {running && <Loader2 size={14} className="animate-spin" />}
-                            {running ? (liveStatus ?? 'Waiting for output…') : 'Waiting for output.'}
-                          </div>
-                        )}
+                        ) : !running ? (
+                          <div className="text-xs text-text-muted">Waiting for output.</div>
+                        ) : null}
                         {toolEvents.length > 0 && (
                           <div className="mt-3 border-t border-border pt-3">
                             {toolEvents.slice(-6).map((event, index) => (
@@ -838,7 +909,8 @@ function ChatTab({ project }: { project: Project }) {
                                   })}
                                 >
                                   <span className="mt-0.5 shrink-0 font-mono text-blue">$</span>
-                                  <span className="flex-1 truncate font-mono">{event.toolName}</span>
+                                  <span className="shrink-0 font-mono">{event.toolName}</span>
+                                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] opacity-70">{toolCallSummary(event)}</span>
                                   <ChevronDown size={11} className={classNames('mt-0.5 shrink-0 transition-transform', expandedTools.has(eventKey(event)) && 'rotate-180')} />
                                 </button>
                                 {expandedTools.has(eventKey(event)) && event.text && (
@@ -884,7 +956,14 @@ function ChatTab({ project }: { project: Project }) {
                             })()}
                           </div>
                         )}
-                        {running && <ThinkingIndicator />}
+                        {!running && <ChangedFilesRow files={parseChangedFiles(run.changed_files)} />}
+                        {running && (
+                          <RunActivityStrip
+                            run={run}
+                            liveStatus={liveStatus}
+                            lastTool={toolEvents.at(-1)}
+                          />
+                        )}
                       </div>
                     </div>
                   </div>
