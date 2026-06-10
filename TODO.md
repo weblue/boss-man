@@ -14,9 +14,7 @@
   - [x] #1 Warm resumes across iterations — automatic in Docker mode via `captureSessions` + session bind mounts + Sandcastle 0.7.0
   - [x] #4 Persist cancelled-run session metadata — `getAbortMetadata()` on AbortError
   - [x] #5 Richer stream events — `result` + `sessionId` wired in runner.ts
-- **P11** Auth/security:
-  - [x] `LITELLM_MASTER_KEY` gate on `/api/*`; login screen on first visit + 401; EventSource uses `?apiKey=`
-  - [x] CORS restricted to localhost origins
+- **P11** Auth/security
 
 ## TODO
 
@@ -42,7 +40,3 @@ Replace static tier aliases with rules-based routing (token count, task type, co
   `buildFirstTurnPrompt()` concatenates static `orchestrator.md` with per-session message → no cache hit. Partial `[no SDK]`: memoize `loadOrchestratorPrompt()` (done). Full fix needs `ClaudeCodeOptions.systemPrompt` to move static instructions to a system turn. SDK-blocked.
 - [ ] **P8 #3 — Worker prompts in user-turn not system** · **medium** (~750–1,200B boilerplate uncacheable)
   Same `systemPrompt` gap. No workaround yet. SDK-blocked.
-
-### One-offs
-- [ ] Remove prismodev package; add agent ignore file and document best practices
-- [ ] Pass `sessionStorage.hostProjectsDir` to `claudeCode()` for litellm mode so session captures stay in `data/` instead of `~/.claude`

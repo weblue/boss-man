@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { mkdirSync, existsSync } from 'node:fs';
+import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { insertProject, listProjects, getProject, deleteProject, listRuns, isRunActive } from '../db.js';
@@ -9,6 +9,36 @@ import { promisify } from 'node:util';
 import { ensureRepoHasHead } from '../runner.js';
 
 const execFileAsync = promisify(execFile);
+
+/** Default ignore patterns for newly scaffolded projects. Claude Code's Grep
+ *  (ripgrep) respects working-tree `.gitignore`, so this keeps heavy/secret paths
+ *  out of agent search context — the real token-saving mechanism (`.claudeignore`
+ *  is a no-op Claude Code does not read). Written only when the repo has none. */
+const DEFAULT_GITIGNORE = `node_modules/
+dist/
+build/
+coverage/
+.next/
+.turbo/
+.cache/
+__pycache__/
+.venv/
+venv/
+*.log
+*.tmp
+.env
+.env.*
+*.db
+*.sqlite
+*.sqlite3
+.DS_Store
+`;
+
+function seedGitignore(repoPath: string): void {
+  const path = join(repoPath, '.gitignore');
+  if (existsSync(path)) return;
+  writeFileSync(path, DEFAULT_GITIGNORE);
+}
 
 const router = new Hono();
 
@@ -46,9 +76,9 @@ router.post('/api/projects', async (c) => {
     execFileSync('git', ['init', repoPath], { stdio: 'inherit' });
   }
 
+  seedGitignore(repoPath);
   await ensureRepoHasHead(repoPath);
 
-  // prismo doctor runs on first orchestrator use, not here — it'd block on large repos.
   insertProject({
     id,
     name,

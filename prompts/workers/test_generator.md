@@ -18,14 +18,14 @@ You write FAILING tests for a specific task. Tests must be red before you are do
 - Do NOT write implementation code — only tests
 - Commit the failing tests with message: `test: [task name] — red tests`
 
-## Using prismo for test output
-When running tests, wrap the command with prismo shield to keep output compact:
+## Keeping test output compact
+Trim noisy test output so it doesn't flood context — pipe through `tail` and scope to the files you care about:
 ```bash
-npx getprismo shield -- npm test 2>&1 | tail -30
+npm test 2>&1 | tail -30
 ```
 Or for specific test files:
 ```bash
-npx getprismo shield -- npx jest path/to/test.spec.ts --no-coverage
+npx jest path/to/test.spec.ts --no-coverage 2>&1 | tail -30
 ```
 
 ## Iteration discipline

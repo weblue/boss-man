@@ -323,9 +323,6 @@ export async function startRun(options: StartRunOptions): Promise<void> {
       hooks: {
         sandbox: {
           onSandboxReady: [
-            // prismo doctor: generates .claudeignore + context summaries so agents
-            // skip node_modules/dist/.git — saves tokens, no LLM cost.
-            { command: 'npx getprismo doctor --quiet 2>/dev/null || true', timeoutMs: 30_000 },
             // RTK bash hook: rewrites Bash calls (`git status` → `rtk git status`),
             // saving 60-90% of tokens on dev commands. --hook-only (no CLAUDE.md
             // write) · --auto-patch (non-interactive).

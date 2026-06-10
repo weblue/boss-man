@@ -8,7 +8,6 @@ nginx/.current.conf
 *.bak
 .sandcastle/
 .DS_Store
-.prismo/
 .cursorignore
 projects/*
 !projects/.gitkeep

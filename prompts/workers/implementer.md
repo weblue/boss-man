@@ -17,9 +17,10 @@ You make failing tests pass. Your only success criterion is green tests.
 - Commit passing implementation with: `feat: [task name]`
 - Do NOT add unrelated changes, refactors, or new features beyond what the tests require
 
-## Using prismo for test output
+## Keeping test output compact
+Pipe noisy test output through `tail` so it doesn't flood context:
 ```bash
-npx getprismo shield -- npm test 2>&1 | tail -50
+npm test 2>&1 | tail -50
 ```
 
 ## Iteration discipline

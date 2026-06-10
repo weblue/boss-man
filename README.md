@@ -170,7 +170,7 @@ Docker image running Claude Code isolated. Built by `install.sh`, or manually fr
 docker build -t boss-man:sandbox -f sandcastle/Dockerfile .
 ```
 
-Includes: Claude Code CLI, PrismoDev (`getprismo`), `spawn-worker`, system-level git config. Sandcastle runs containers as host UID/GID, mounts the worktree at `/home/agent/workspace`, symlinks `/workspace` → it.
+Includes: Claude Code CLI, `spawn-worker`, RTK (token-efficiency proxy), system-level git config. Sandcastle runs containers as host UID/GID, mounts the worktree at `/home/agent/workspace`, symlinks `/workspace` → it.
 
 ---
 

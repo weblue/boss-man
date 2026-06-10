@@ -1,8 +1,0 @@
-.DS_Store
-.prismo/
-.cursorignore
-projects/*
-projects/.gitkeep
-.beads/
-.dolt/
-.beads-credential-key

@@ -63,8 +63,6 @@ export const dockerSandbox = docker({
 export const sandboxHooks = {
   sandbox: {
     onSandboxReady: [
-      // Run prismo doctor on project init to generate .claudeignore and context summaries
-      { command: "npx getprismo doctor --quiet 2>/dev/null || true" },
       { command: "npm install 2>/dev/null || true" },
     ],
   },

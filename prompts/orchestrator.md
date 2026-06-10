@@ -63,7 +63,6 @@ On every session start:
 1. Use the `beads_prime` tool — load task state and memories.
 2. If `/workspace/.spec/checkpoint.md` exists, read it and resume there.
 3. If unblocked tasks exist with no running worker, re-enter the execution loop.
-4. If no `.spec/` exists (first open), run `getprismo doctor 2>/dev/null || npx getprismo doctor 2>/dev/null || true` to generate context files. Safe to skip if it stalls.
 
 ---
 

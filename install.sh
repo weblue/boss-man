@@ -46,22 +46,6 @@ if ! command -v git &>/dev/null; then
 fi
 ok "git $(git --version | awk '{print $3}')"
 
-# ── 2. PrismoDev check ───────────────────────────────────────────────────────
-
-echo ""
-echo "── Checking PrismoDev (prismo) ──"
-
-if command -v getprismo &>/dev/null; then
-  ok "prismo installed: $(getprismo --version 2>/dev/null || echo 'version unknown')"
-elif command -v npx &>/dev/null && npx --no getprismo --version &>/dev/null 2>&1; then
-  ok "prismo available via npx"
-else
-  warn "prismo not found — install it with: npm install -g getprismo"
-  warn "Then run 'getprismo doctor' in each project directory before starting work."
-fi
-# NOTE: prismo doctor is intentionally NOT run during install — it scans the project
-# and can stall on large repos. Run it manually per-project: getprismo doctor
-
 # ── 3. Environment file ──────────────────────────────────────────────────────
 
 echo ""
@@ -141,7 +125,7 @@ ok "nginx:alpine ready"
 
 echo ""
 echo "── Building sandbox Docker image (boss-man:sandbox) ──"
-echo "   This installs Claude Code, prismo, and spawn-worker in the agent sandbox."
+echo "   This installs Claude Code, spawn-worker, and RTK in the agent sandbox."
 
 docker build \
   -t "${SANDBOX_IMAGE:-boss-man:sandbox}" \

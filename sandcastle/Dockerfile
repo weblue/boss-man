@@ -15,9 +15,6 @@ RUN npm install -g @openai/codex
 # Pi CLI (coding agent)
 RUN npm install -g @earendil-works/pi-coding-agent
 
-# PrismoDev (token efficiency)
-RUN npm install -g getprismo
-
 # spawn-worker CLI (copied at build time; bind-mounted at runtime in dev)
 COPY scripts/spawn-worker /usr/local/bin/spawn-worker
 RUN chmod +x /usr/local/bin/spawn-worker
