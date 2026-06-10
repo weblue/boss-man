@@ -1,8 +1,4 @@
 import { Hono } from 'hono';
-import { readFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { readFileFromGit } from '../git-utils.js';
 import { v4 as uuidv4 } from 'uuid';
 import {
   insertSession, getSession, listSessions, updateSession, deleteSession,
@@ -10,54 +6,26 @@ import {
   type OrchestratorSession,
 } from '../db.js';
 import { startRun } from '../runner.js';
-import { validateResumeSession } from '../session-utils.js';
 import { getPersistedEvents, createRunEventStream } from '../streaming.js';
+import { buildSeededPrompt, buildFirstTurnPrompt, maybeFoldSession } from '../orchestrator-context.js';
 import {
   BOSS_MAN_AUTH_MODE,
   DEFAULT_AGENT_PROVIDER,
   DEFAULT_AGENT_MODEL,
   defaultModelForRole,
-  PROMPTS_DIR,
   type ClaudeAuthProvider,
 } from '../config.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 const router = new Hono();
 const VALID_AGENT_PROVIDERS = new Set(['claude-code', 'codex', 'opencode']);
 
 /** Per-session lock against double-submit races on /reply (concurrent → 409). */
 const replyLocks = new Set<string>();
 
-/** Above this, prepend a notice telling the orchestrator to write checkpoint.md
- *  before continuing — curbs unbounded session-JSONL growth re-read each turn. */
-const SESSION_SUMMARIZE_THRESHOLD_TOKENS = 60_000;
-
-function buildSummarizeNotice(tokenCount: number): string {
-  const tokenK = Math.round(tokenCount / 1000);
-  return (
-    `[Context monitor: ~${tokenK}K tokens have accumulated in this session's history. ` +
-    `Before addressing the message below, update /workspace/.spec/checkpoint.md ` +
-    `(current phase, completed/pending tasks, key decisions) and commit it. ` +
-    `See "Context monitor" in your system instructions.]\n\n---\n\n`
-  );
-}
-
 interface SessionRuntime {
   agentProvider: string;
   claudeAuthProvider: string;
   model: string;
-}
-
-const ORCHESTRATOR_PROMPT: string = (() => {
-  const path = join(PROMPTS_DIR, 'orchestrator.md');
-  if (!existsSync(path)) return '';
-  return readFileSync(path, 'utf8').trimEnd();
-})();
-
-function buildFirstTurnPrompt(userMessage: string): string {
-  return ORCHESTRATOR_PROMPT
-    ? `${ORCHESTRATOR_PROMPT}\n\n---\n\n## User's Initial Request\n\n${userMessage}`
-    : userMessage;
 }
 
 function runtimeFromBody(body: Record<string, unknown> | null, fallback?: SessionRuntime): SessionRuntime {
@@ -133,9 +101,9 @@ router.post('/api/projects/:projectId/sessions', async (c) => {
   const branch = `orchestrator/${sessionId.slice(0, 8)}`;
   const runtime = runtimeFromBody(body);
 
-  // Build full prompt before storing, so the DB row matches what the agent received.
-  const fullPrompt = buildFirstTurnPrompt(body.message);
-  const runId = makeRun(projectId, sessionId, fullPrompt, branch, 'Orchestrator — turn 1', runtime);
+  // Store the RAW user message in run.prompt (UI renders it as the user bubble).
+  // The seeded prompt the agent actually receives is built separately below.
+  const runId = makeRun(projectId, sessionId, body.message, branch, 'Orchestrator — turn 1', runtime);
 
   const session: OrchestratorSession = {
     id: sessionId,
@@ -144,14 +112,19 @@ router.post('/api/projects/:projectId/sessions', async (c) => {
     status: 'discovery',
     current_run_id: runId,
     created_at: Date.now(),
+    rolling_summary: null,
+    summary_through_run_id: null,
   };
   insertSession(session);
+
+  // Server-owned context (Option B): seed a fresh session — no provider resume.
+  const seededPrompt = buildFirstTurnPrompt(projectId, sessionId, body.message);
 
   startRun({
     id: runId,
     projectId,
     repoPath: project.repo_path,
-    prompt: fullPrompt,
+    prompt: seededPrompt,
     model: runtime.model,
     sandboxProvider: 'docker',
     branch,
@@ -242,56 +215,38 @@ router.post('/api/sessions/:id/reply', async (c) => {
       return c.json({ error: 'Current turn is still running' }, 409);
     }
 
-    // Scan all runs (not just current) for the latest captured session ID, so a
-    // cancelled/failed turn falls back to the last stable snapshot.
-    const allSessionRuns = listSessionRuns(session.id);
-    const lastRunWithSession = [...allSessionRuns].reverse().find((r) => r.last_session_id != null);
-    const rawResumeSessionId = lastRunWithSession?.last_session_id ?? undefined;
-
-    // Validate the file exists first — stale IDs become fresh starts, not resume errors.
-    const resumeSessionId = rawResumeSessionId
-      ? (await validateResumeSession(
-          rawResumeSessionId,
-          session.project_id,
-          lastRunWithSession!.agent_provider,
-          lastRunWithSession!.claude_auth_provider,
-        )) ?? undefined
-      : undefined;
-
-    // Context guard: over threshold → notice telling orchestrator to checkpoint first.
-    const cumulativeTokens = allSessionRuns.reduce(
-      (sum, r) => sum + r.total_cache_read_tokens + r.total_cache_creation_tokens,
-      0,
-    );
-    const replyPrompt = cumulativeTokens > SESSION_SUMMARIZE_THRESHOLD_TOKENS
-      ? `${buildSummarizeNotice(cumulativeTokens)}${body.message as string}`
-      : body.message as string;
-
+    const message = body.message as string;
     const branch = prevRun?.branch ?? `orchestrator/${session.id.slice(0, 8)}`;
     const runtime = runtimeFromBody(body, prevRun ? {
       agentProvider: prevRun.agent_provider,
       claudeAuthProvider: prevRun.claude_auth_provider,
       model: prevRun.model,
     } : undefined);
-    // resumeSession only supports maxIterations: 1 in Sandcastle
-    const runId = makeRun(session.project_id, session.id, replyPrompt, branch, 'Orchestrator — reply', runtime, 1);
+
+    // Store the RAW user message in run.prompt (rendered as the user bubble); the
+    // seeded prompt the agent receives is reconstructed server-side below.
+    const runId = makeRun(session.project_id, session.id, message, branch, 'Orchestrator — reply', runtime, 50);
 
     updateSession(session.id, { current_run_id: runId });
+
+    // Server-owned rolling context (Option B): rebuild the whole conversation
+    // (summary + prime context + verbatim tail + this message) and start a FRESH
+    // session — no provider resume, so the replayed context can't snowball.
+    const seededPrompt = buildSeededPrompt(session, message);
 
     startRun({
       id: runId,
       projectId: session.project_id,
       repoPath: project.repo_path,
-      prompt: replyPrompt,
+      prompt: seededPrompt,
       model: runtime.model,
       sandboxProvider: 'docker',
       branch,
-      maxIterations: 1,
+      maxIterations: 50,
       name: 'Orchestrator — reply',
       role: 'orchestrator',
       agentProvider: runtime.agentProvider,
       claudeAuthProvider: runtime.claudeAuthProvider,
-      resumeSessionId,
       orchestratorSessionId: session.id,
     }).catch(console.error);
 
@@ -301,84 +256,15 @@ router.post('/api/sessions/:id/reply', async (c) => {
   }
 });
 
-/** Compact-resume prompt: orchestrator system prompt + checkpoint. Fresh context,
- *  but the agent knows where the previous run left off. */
-function buildCompactPrompt(checkpointContent: string): string {
-  const base = ORCHESTRATOR_PROMPT;
-  const resume = [
-    '---',
-    '',
-    '## Resuming from Compacted Context',
-    '',
-    'The previous orchestrator run accumulated too much context and was compacted to reduce',
-    'token usage. You are starting with a completely fresh context window. Your tools, API,',
-    'and workspace are all intact — only the conversation history was dropped.',
-    '',
-    '**Do not re-introduce yourself, re-ask questions already answered, or repeat completed',
-    'work.** Read the checkpoint below and resume immediately from where the previous run',
-    'left off.',
-    '',
-    '```',
-    checkpointContent.trim(),
-    '```',
-    '',
-    'Resume now.',
-  ].join('\n');
-  return base ? `${base}\n\n${resume}` : resume;
-}
-
-// POST /api/sessions/:id/compact — orchestrator calls when context grows too large.
-// Starts a fresh run (no resumeSessionId) seeded with checkpoint.md → clean context.
+// POST /api/sessions/:id/compact — force an immediate server-side fold of older
+// turns into the rolling summary. With server-owned context (Option B), folding is
+// automatic after every orchestrator turn, so this is just a manual trigger kept
+// for back-compat with the session_compact MCP tool. It does NOT start a new run.
 router.post('/api/sessions/:id/compact', async (c) => {
   const session = getSession(c.req.param('id'));
   if (!session) return c.json({ error: 'Session not found' }, 404);
-
-  const project = getProject(session.project_id);
-  if (!project) return c.json({ error: 'Project not found' }, 404);
-
-  const checkpoint = readFileFromGit(project.repo_path, '.spec/checkpoint.md');
-  if (!checkpoint) {
-    return c.json({
-      error: 'No checkpoint.md found in git. Commit .spec/checkpoint.md before compacting.',
-    }, 422);
-  }
-
-  // Derive runtime from the previous run so model/provider are preserved.
-  const prevRun = session.current_run_id ? getRun(session.current_run_id) : null;
-  const runtime = runtimeFromBody(null, prevRun ? {
-    agentProvider: prevRun.agent_provider,
-    claudeAuthProvider: prevRun.claude_auth_provider,
-    model: prevRun.model,
-  } : undefined);
-
-  // Same branch → same worktree.
-  const branch = prevRun?.branch ?? `orchestrator/${session.id.slice(0, 8)}`;
-  const fullPrompt = buildCompactPrompt(checkpoint);
-
-  // 50 iterations like initial start — compact runs complete the full pipeline.
-  const runId = makeRun(session.project_id, session.id, fullPrompt, branch, 'Orchestrator — compact', runtime, 50);
-
-  // Point session at new run now; old run exits 0 shortly.
-  updateSession(session.id, { current_run_id: runId });
-
-  startRun({
-    id: runId,
-    projectId: session.project_id,
-    repoPath: project.repo_path,
-    prompt: fullPrompt,
-    model: runtime.model,
-    sandboxProvider: 'docker',
-    branch,
-    maxIterations: 50,
-    name: 'Orchestrator — compact',
-    role: 'orchestrator',
-    agentProvider: runtime.agentProvider,
-    claudeAuthProvider: runtime.claudeAuthProvider,
-    // resumeSessionId intentionally omitted — fresh context window
-    orchestratorSessionId: session.id,
-  }).catch(console.error);
-
-  return c.json({ session: getSession(session.id), run: getRun(runId) }, 201);
+  await maybeFoldSession(session.id);
+  return c.json({ session: getSession(session.id) });
 });
 
 // DELETE /api/sessions/:id — cascade-delete a session and all its runs/events

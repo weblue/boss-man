@@ -6,9 +6,13 @@ import { mkdirSync } from 'node:fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', '..', 'data');
-mkdirSync(DATA_DIR, { recursive: true });
 
-const db = new Database(join(DATA_DIR, 'runs.db'));
+// BOSS_MAN_DB_PATH lets tests (and ephemeral runs) point at an isolated database
+// file instead of the shared dev DB. Defaults to data/runs.db.
+const DB_PATH = process.env.BOSS_MAN_DB_PATH ?? join(DATA_DIR, 'runs.db');
+mkdirSync(dirname(DB_PATH), { recursive: true });
+
+const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 
 db.exec(`
@@ -19,6 +23,8 @@ db.exec(`
     status TEXT NOT NULL DEFAULT 'discovery',
     current_run_id TEXT,
     created_at INTEGER NOT NULL,
+    rolling_summary TEXT,
+    summary_through_run_id TEXT,
     FOREIGN KEY (project_id) REFERENCES projects(id)
   );
 
@@ -102,6 +108,15 @@ if (!runColumns.some((column) => column.name === 'orchestrator_session_id')) {
 }
 if (!runColumns.some((column) => column.name === 'changed_files')) {
   db.exec('ALTER TABLE runs ADD COLUMN changed_files TEXT');
+}
+
+// orchestrator_sessions migrations — server-owned rolling context (Option B).
+const sessionColumns = db.prepare<[], { name: string }>('PRAGMA table_info(orchestrator_sessions)').all();
+if (!sessionColumns.some((column) => column.name === 'rolling_summary')) {
+  db.exec('ALTER TABLE orchestrator_sessions ADD COLUMN rolling_summary TEXT');
+}
+if (!sessionColumns.some((column) => column.name === 'summary_through_run_id')) {
+  db.exec('ALTER TABLE orchestrator_sessions ADD COLUMN summary_through_run_id TEXT');
 }
 
 // ── Projects ─────────────────────────────────────────────────────────────────
@@ -284,11 +299,15 @@ export interface OrchestratorSession {
   status: string;
   current_run_id: string | null;
   created_at: number;
+  /** Server-owned rolling summary of folded (older) turns. Null until first fold. */
+  rolling_summary: string | null;
+  /** Run id of the newest turn already folded into rolling_summary. Null until first fold. */
+  summary_through_run_id: string | null;
 }
 
 const _insertSession = db.prepare(`
-  INSERT INTO orchestrator_sessions (id, project_id, name, status, current_run_id, created_at)
-  VALUES (@id, @project_id, @name, @status, @current_run_id, @created_at)
+  INSERT INTO orchestrator_sessions (id, project_id, name, status, current_run_id, created_at, rolling_summary, summary_through_run_id)
+  VALUES (@id, @project_id, @name, @status, @current_run_id, @created_at, @rolling_summary, @summary_through_run_id)
 `);
 export function insertSession(s: OrchestratorSession) { _insertSession.run(s); }
 
@@ -306,11 +325,21 @@ const _updateSession = db.prepare(`
   UPDATE orchestrator_sessions SET
     status = COALESCE(@status, status),
     name = COALESCE(@name, name),
-    current_run_id = COALESCE(@current_run_id, current_run_id)
+    current_run_id = COALESCE(@current_run_id, current_run_id),
+    rolling_summary = COALESCE(@rolling_summary, rolling_summary),
+    summary_through_run_id = COALESCE(@summary_through_run_id, summary_through_run_id)
   WHERE id = @id
 `);
 export function updateSession(id: string, fields: Partial<OrchestratorSession>) {
-  _updateSession.run({ id, status: null, name: null, current_run_id: null, ...fields });
+  _updateSession.run({
+    id,
+    status: null,
+    name: null,
+    current_run_id: null,
+    rolling_summary: null,
+    summary_through_run_id: null,
+    ...fields,
+  });
 }
 
 // Hoisted so each statement compiles once.

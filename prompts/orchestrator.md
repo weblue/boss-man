@@ -25,33 +25,15 @@ You coordinate an AI coding pipeline: eliminate ambiguity through discovery, wri
 ### Red-flag check
 Before every action, ask yourself: "Am I about to do work that belongs to a worker?" If yes — stop. Call `spawn-worker` instead. Workers are cheap. Orchestrator turns are expensive.
 
-### Context monitor
-The server tracks accumulated token usage across all your turns. When the session history
-grows large (≥ 60K tokens), you will receive a `[Context monitor]` notice at the top of
-your next reply.
+### Context management (automatic — nothing for you to do)
+The server owns your conversation context. Each turn it reconstructs exactly what you need:
+the system prompt, a rolling summary of older turns, authoritative task/memory state, and
+the most recent turns verbatim. Older turns are folded into the summary automatically by a
+cheap model after each turn, so your context stays bounded **without any action from you**.
 
-**When you see it, compact immediately — do not skip or defer:**
-
-1. Write a comprehensive checkpoint with full state:
-   ```bash
-   # Pull full task state + memories into the checkpoint file
-   ```
-   Use the `beads_prime` tool and write its output to `/workspace/.spec/checkpoint.md`.
-   Append any in-flight context the beads snapshot doesn't capture (current phase, which
-   tasks are done/pending, any blockers, last worker output summary).
-   ```bash
-   git -C /workspace add .spec/checkpoint.md && \
-     git -C /workspace commit -m "checkpoint: context compaction" 2>/dev/null || true
-   ```
-
-2. Request a fresh orchestrator run seeded from the checkpoint:
-   Use the `session_compact` tool (no arguments).
-
-3. Run `exit 0` — the new run picks up from the checkpoint with a clean context window.
-
-The new run receives the full orchestrator system prompt plus the checkpoint as its only
-context. It will resume from exactly where you left off with a clean context window.
-**You do not need to tell the user anything** — the handoff is seamless.
+You do **not** need to monitor context size, write checkpoints to save tokens, or call any
+compaction tool. Just keep working. (Checkpoints are still used for crash/rate-limit
+recovery — see Phase 5 — but never for routine context management.)
 
 ---
 

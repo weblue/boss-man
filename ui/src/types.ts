@@ -53,7 +53,7 @@ export interface AgentEvent {
   /** Stable autoincrement DB row id. Present on persisted events and live events after the server embeds it.
    *  Used for deduplication when persisted replay and live stream overlap. */
   seq?: number;
-  type: 'text' | 'toolCall' | 'toolResult' | 'iteration' | 'usage' | 'error' | 'done';
+  type: 'text' | 'toolCall' | 'toolResult' | 'iteration' | 'usage' | 'status' | 'error' | 'done';
   text?: string;
   toolName?: string;
   iteration?: number;

@@ -9,6 +9,8 @@
 - **P5** Worker improvements
 - **P6** Sandbox build & CI
 - **P7** Multi-project
+- **P8**
+  = [x] #2 Session JSONL compaction between turns
 - **P11** Auth/security:
   - [x] `LITELLM_MASTER_KEY` gate on `/api/*`; login screen on first visit + 401; EventSource uses `?apiKey=`
   - [x] CORS restricted to localhost origins
@@ -38,24 +40,19 @@ Ordered by impact. Most blocked on `@ai-hero/sandcastle`; actionable if we fork.
 **#1 Workers restart cold each iteration** `[SDK]` · **critical** (250K input tokens on one 10-iter run)
 Sandcastle applies resume only on iteration 1 (`iterationResumeSession = i===1 ? resumeSession : undefined`); iters 2–N relaunch fresh. Fix: thread each iteration's captured `sessionId` forward (`IterationResult.sessionId` exists). Workaround: `MAX_ITERATIONS` 10→3, prompts tell agents to stop+report blockers.
 
-**#2 Session JSONL compaction between turns** `[SDK]` (partial) · **high** (49K+ tokens by turn 12)
-Server detects >60K cumulative tokens, prepends `[Context monitor]` notice → orchestrator writes `checkpoint.md`. But JSONL still grows (Claude Code replays it on resume). True fix: after checkpoint, clear JSONL + start fresh session seeded with checkpoint. Needs SDK to (a) truncate/replace session file pre-resume, or (b) `startSession` option injecting synthetic prior-context as first turn. Neither exists.
-
-**#3 Cache-prefix stability for orchestrator prompt** `[SDK]` · **medium** (~2,800-token prefix re-paid per session)
+**#2 Cache-prefix stability for orchestrator prompt** `[SDK]` · **medium** (~2,800-token prefix re-paid per session)
 `buildFirstTurnPrompt()` concatenates static `orchestrator.md` with per-session message → no cache hit. Partial `[no SDK]`: memoize `loadOrchestratorPrompt()` (done — was readFileSync per call). Full fix: needs `ClaudeCodeOptions.systemPrompt` to move static instructions to system turn.
 
-**#4 Worker prompts in user-turn not system** `[SDK]` · **medium** (~750–1,200B boilerplate uncacheable)
+**#3 Worker prompts in user-turn not system** `[SDK]` · **medium** (~750–1,200B boilerplate uncacheable)
 Same `systemPrompt` gap as #3. No workaround.
 
-**#5 Cancelled runs discard partial session IDs** `[SDK]` · **medium** (retries restart cold)
+**#4 Cancelled runs discard partial session IDs** `[SDK]` · **medium** (retries restart cold)
 Cancel after N/M iters loses captured state. Fix: SDK exposes per-iteration sessionId via callback (`onIterationComplete`) so server can `updateRun` mid-run. Workaround: orchestrator sessions scan all runs for last non-null `last_session_id`; workers have none.
 
-**#7 Structured agent event model** `[SDK]` · observability only
+**#5 Structured agent event model** `[SDK]` · observability only
 Expand events beyond `text`/`toolCall` (assistant_text_delta, tool_started/stdout/stderr/result, file_changed, diff_available, approval_requested, run_status_changed, error, done). Blocked: Sandcastle only emits `text`/`toolCall`.
 
 
-remove prismodev package and just add agent ignore file and find best practices
-
-investigate slowness on main UI
-
-prioritize sandbox sdk updates that reduce token usage + improve performance
+### One-offs
+- remove prismodev package and just add agent ignore file and find best practices
+- prioritize sandbox sdk updates that reduce token usage + improve performance

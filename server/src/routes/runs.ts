@@ -38,7 +38,7 @@ router.post('/api/runs', async (c) => {
   const {
     projectId, role, prompt, model, name,
     agentProvider, sandboxProvider, maxIterations,
-    effort, beadsTaskId, resumeRunId, claudeAuthProvider,
+    effort, beadsTaskId, claudeAuthProvider,
   } = body;
 
   if (!projectId) return c.json({ error: 'projectId is required' }, 400);
@@ -50,13 +50,6 @@ router.post('/api/runs', async (c) => {
 
   const project = getProject(projectId);
   if (!project) return c.json({ error: `Project not found: ${projectId}` }, 404);
-
-  let resumeSessionId: string | undefined;
-  if (resumeRunId) {
-    const prev = getRun(resumeRunId);
-    if (!prev) return c.json({ error: `Resume run not found: ${resumeRunId}` }, 404);
-    resumeSessionId = prev.last_session_id ?? undefined;
-  }
 
   const id = uuidv4();
   const branch = `agent/${id.slice(0, 8)}`;
@@ -103,7 +96,6 @@ router.post('/api/runs', async (c) => {
     branch,
     maxIterations: maxIterations ?? 10,
     name,
-    resumeSessionId,
     role,
     agentProvider: resolvedProvider,
     claudeAuthProvider: resolvedClaudeAuthProvider,

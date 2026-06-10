@@ -504,6 +504,7 @@ function ChatTab({ project }: { project: Project }) {
     return window.localStorage.getItem('boss-man.orchestratorModel') ?? DEFAULT_ORCHESTRATOR_MODEL;
   });
   const [eventsByRun, setEventsByRun] = useState<Record<string, AgentEvent[]>>({});
+  const [liveStatus, setLiveStatus] = useState<string | null>(null);
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
@@ -581,6 +582,12 @@ function ChatTab({ project }: { project: Project }) {
 
   useEventStream(streamPath, (event) => {
     if (!currentRunId) return;
+    // Status events are ephemeral liveness signals — show the latest, don't append.
+    if (event.type === 'status') {
+      setLiveStatus(event.text ?? null);
+      return;
+    }
+    setLiveStatus(null);
     setEventsByRun((prev) => ({
       ...prev,
       [currentRunId]: [...(prev[currentRunId] ?? []), event],
@@ -592,6 +599,9 @@ function ChatTab({ project }: { project: Project }) {
       queryClient.invalidateQueries({ queryKey: ['runs', project.id] });
     }
   });
+
+  // Drop any stale liveness text when the active run changes or goes inactive.
+  useEffect(() => { setLiveStatus(null); }, [currentRunId]);
 
   useEffect(() => {
     scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight });
@@ -811,7 +821,7 @@ function ChatTab({ project }: { project: Project }) {
                         ) : (
                           <div className="flex items-center gap-2 text-xs text-text-muted">
                             {running && <Loader2 size={14} className="animate-spin" />}
-                            Waiting for output.
+                            {running ? (liveStatus ?? 'Waiting for output…') : 'Waiting for output.'}
                           </div>
                         )}
                         {toolEvents.length > 0 && (
@@ -1058,6 +1068,7 @@ function RunsTab({ project }: { project: Project }) {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(() => requestedRunId);
   const [selectedOrcSessionId, setSelectedOrcSessionId] = useState<string | null>(null);
   const [eventsByRun, setEventsByRun] = useState<Record<string, AgentEvent[]>>({});
+  const [liveStatusByRun, setLiveStatusByRun] = useState<Record<string, string>>({});
   const [showDebug, setShowDebug] = useState(false);
   const [expandedRunTools, setExpandedRunTools] = useState<Set<string>>(new Set());
 
@@ -1141,6 +1152,11 @@ function RunsTab({ project }: { project: Project }) {
   // Stream active worker run events
   useEventStream(selectedRun && isActive(selectedRun.status) ? `/api/runs/${selectedRun.id}/events` : null, (event) => {
     if (!selectedRun) return;
+    if (event.type === 'status') {
+      setLiveStatusByRun((prev) => ({ ...prev, [selectedRun.id]: event.text ?? '' }));
+      return;
+    }
+    setLiveStatusByRun((prev) => ({ ...prev, [selectedRun.id]: '' }));
     setEventsByRun((prev) => ({ ...prev, [selectedRun.id]: [...(prev[selectedRun.id] ?? []), event] }));
     if (event.type === 'done' || event.type === 'error') {
       queryClient.invalidateQueries({ queryKey: ['runs', project.id] });
@@ -1154,6 +1170,11 @@ function RunsTab({ project }: { project: Project }) {
     selectedOrcSessionId && isActive(latestOrcTurn?.status) ? `/api/sessions/${selectedOrcSessionId}/events` : null,
     (event) => {
       if (!latestOrcTurn) return;
+      if (event.type === 'status') {
+        setLiveStatusByRun((prev) => ({ ...prev, [latestOrcTurn.id]: event.text ?? '' }));
+        return;
+      }
+      setLiveStatusByRun((prev) => ({ ...prev, [latestOrcTurn.id]: '' }));
       setEventsByRun((prev) => ({ ...prev, [latestOrcTurn.id]: [...(prev[latestOrcTurn.id] ?? []), event] }));
       if (event.type === 'done' || event.type === 'error') {
         queryClient.invalidateQueries({ queryKey: ['runs', project.id] });
@@ -1313,6 +1334,9 @@ function RunsTab({ project }: { project: Project }) {
                 : orcTranscriptQuery.isLoading
                   ? 'Loading…'
                   : 'No events captured.'}
+              {latestOrcTurn && isActive(latestOrcTurn.status) && liveStatusByRun[latestOrcTurn.id]
+                ? `\n\n› ${liveStatusByRun[latestOrcTurn.id]}`
+                : ''}
             </pre>
           </>
         ) : selectedRun ? (
@@ -1412,6 +1436,12 @@ function RunsTab({ project }: { project: Project }) {
                     );
                   })
                 : <div className="text-text-muted">{selectedRun.error ?? 'No live events captured for this run.'}</div>}
+              {isActive(selectedRun.status) && liveStatusByRun[selectedRun.id] && (
+                <div className="mt-1 flex items-center gap-2 text-text-muted">
+                  <Loader2 size={11} className="animate-spin" />
+                  {liveStatusByRun[selectedRun.id]}
+                </div>
+              )}
               {/* Always surface the error when present, even if partial events were captured */}
               {selectedRun.error && selectedRun.status === 'failed' && logEvents.length > 0 && (
                 <div className="mt-2 rounded border border-red/20 bg-red/5 px-2 py-1.5 text-[11px] text-red">

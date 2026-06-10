@@ -6,7 +6,7 @@ export interface AgentEvent {
   /** Stable sequence number (terminal_events row id). Set on persisted events and
    *  on live events after pushEvent. Clients dedupe replay/live overlap by it. */
   seq?: number;
-  type: 'text' | 'toolCall' | 'toolResult' | 'iteration' | 'usage' | 'error' | 'done';
+  type: 'text' | 'toolCall' | 'toolResult' | 'iteration' | 'usage' | 'status' | 'error' | 'done';
   text?: string;
   toolName?: string;
   iteration?: number;
@@ -33,6 +33,16 @@ export function pushEvent(runId: string, event: AgentEvent): number {
   const withSeq: AgentEvent = { ...event, seq };
   subscribers.get(runId)?.forEach((fn) => fn(withSeq));
   return seq;
+}
+
+/**
+ * Broadcast a transient event to live subscribers only — no DB insert, no seq.
+ * Used for liveness signals (sandbox setup, resume, "still working" heartbeats)
+ * that convey activity now but carry no history value and would only bloat the
+ * events table + replay if persisted. Late joiners pick up the next heartbeat.
+ */
+export function broadcastEphemeral(runId: string, event: AgentEvent): void {
+  subscribers.get(runId)?.forEach((fn) => fn(event));
 }
 
 export function getPersistedEvents(runId: string): AgentEvent[] {

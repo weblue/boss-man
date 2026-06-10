@@ -16,7 +16,8 @@ import { homedir } from 'node:os';
 import { execFileSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { updateRun, getRun, closeTask } from './db.js';
-import { pushEvent, cleanupRunStream } from './streaming.js';
+import { pushEvent, broadcastEphemeral, cleanupRunStream } from './streaming.js';
+import { maybeFoldSession } from './orchestrator-context.js';
 import {
   CLAUDE_CODE_AUTH_MODE,
   CLAUDE_CODE_OAUTH_TOKEN,
@@ -69,7 +70,6 @@ export interface StartRunOptions {
   branch: string;
   maxIterations: number;
   name?: string;
-  resumeSessionId?: string;
   role: string;
   agentProvider?: string;
   claudeAuthProvider?: string;
@@ -278,7 +278,25 @@ export async function startRun(options: StartRunOptions): Promise<void> {
 
   const mcpHookCommand = buildMcpHookCommand(options.agentProvider ?? 'claude-code');
 
+  // Liveness signals: Sandcastle's onAgentStreamEvent only fires on completed
+  // `text`/`toolCall` messages, so the UI sees nothing during the (often multi-
+  // minute) thinking/resume/tool-execution gaps and looks frozen. Emit ephemeral
+  // status events at the lifecycle points we control plus a periodic heartbeat.
+  const runStartedAt = Date.now();
+  let lastActivityAt = runStartedAt;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const emitStatus = (text: string) =>
+    broadcastEphemeral(options.id, { type: 'status', text, timestamp: new Date().toISOString() });
+
   try {
+    emitStatus('Preparing sandbox…');
+    // Heartbeat: while no real event has arrived recently, report that the agent
+    // is alive and how long it's been working — turns the silent gap into signal.
+    heartbeat = setInterval(() => {
+      if (Date.now() - lastActivityAt < 12_000) return;
+      emitStatus(`Agent working… (${Math.round((Date.now() - runStartedAt) / 1000)}s)`);
+    }, 15_000);
+
     await ensureRepoHasHead(options.repoPath);
 
     const result = await sandcastleRun({
@@ -298,7 +316,6 @@ export async function startRun(options: StartRunOptions): Promise<void> {
       prompt: fullPrompt,
       maxIterations: options.maxIterations,
       branchStrategy: { type: 'branch', branch: options.branch },
-      resumeSession: options.resumeSessionId,
       signal: abortController.signal,
       completionSignal: '<task-complete/>',
       // Grace window after completion signal — prevents zombies where a spawned
@@ -324,6 +341,7 @@ export async function startRun(options: StartRunOptions): Promise<void> {
         path: join(LOGS_DIR, `${options.id}.log`),
         onAgentStreamEvent: (event: AgentStreamEvent) => {
           const timestamp = new Date().toISOString();
+          lastActivityAt = Date.now();
           if (event.type === 'text') {
             pushEvent(options.id, { type: 'text', text: event.message, iteration: event.iteration, timestamp });
           } else if (event.type === 'toolCall') {
@@ -351,6 +369,16 @@ export async function startRun(options: StartRunOptions): Promise<void> {
 
     autoCloseBeadsTask(options.id);
 
+    // Server-owned rolling context (Option B): fold older turns into the session's
+    // rolling summary so the next seeded prompt stays bounded. Orchestrator turns
+    // only; best-effort, never blocks completion.
+    if (options.role === 'orchestrator' && options.orchestratorSessionId) {
+      maybeFoldSession(options.orchestratorSessionId).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[runner] maybeFoldSession failed for ${options.orchestratorSessionId}: ${msg}`);
+      });
+    }
+
     pushEvent(options.id, { type: 'done', timestamp: new Date().toISOString() });
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') {
@@ -362,6 +390,7 @@ export async function startRun(options: StartRunOptions): Promise<void> {
       pushEvent(options.id, { type: 'error', text: error, timestamp: new Date().toISOString() });
     }
   } finally {
+    clearInterval(heartbeat);
     activeRuns.delete(options.id);
     cleanupRunStream(options.id);
   }
