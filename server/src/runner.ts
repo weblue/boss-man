@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { execFileSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { updateRun, getRun, closeTask } from './db.js';
+import { updateRun, getRun, closeTask, listRuns, isRunActive, type Run } from './db.js';
 import { pushEvent, broadcastEphemeral, cleanupRunStream } from './streaming.js';
 import { maybeFoldSession } from './orchestrator-context.js';
 import {
@@ -38,9 +38,9 @@ const execFileAsync = promisify(execFile);
 
 /**
  * Auto-close a run's task on success. Safety net — orchestrator should call
- * beads_complete_task but may forget (crash, compaction, orphaned turn).
+ * task_complete but may forget (crash, compaction, orphaned turn).
  */
-function autoCloseBeadsTask(runId: string): void {
+function autoCloseTask(runId: string): void {
   const run = getRun(runId);
   if (!run?.beads_task_id) return;
   try {
@@ -75,7 +75,7 @@ export interface StartRunOptions {
   agentProvider?: string;
   claudeAuthProvider?: string;
   effort?: string;
-  beadsTaskId?: string;
+  taskId?: string;
   /** Orchestrator session ID — injected as BOSS_MAN_SESSION_ID so the agent can PATCH its own status. */
   orchestratorSessionId?: string;
 }
@@ -106,6 +106,13 @@ function claudeCredentialMounts(provider: ClaudeAuthProvider) {
     { hostPath: join(home, '.claude.json'), sandboxPath: '/home/agent/.claude.json' },
   ].filter((mount) => existsSync(mount.hostPath));
 }
+
+// Mechanical roles do narrow, well-specified work (write failing tests, make
+// tests pass, apply a scoped refactor) that rarely benefits from extended
+// thinking. Cap their thinking budget to cut token spend. Only Claude Code reads
+// MAX_THINKING_TOKENS; it's a harmless no-op for codex/opencode.
+const MECHANICAL_ROLES = new Set(['implementer', 'refactor', 'test_generator']);
+const MECHANICAL_THINKING_TOKENS = '8000';
 
 function getSandbox(
   provider: string,
@@ -145,7 +152,10 @@ function getAgentProvider(
 
   if (agentProvider === 'codex') {
     const resolvedModel = resolveTier(model) || defaultModelForRole(role);
-    const e = effort as 'low' | 'medium' | 'high' | 'xhigh' | undefined;
+    // Codex ignores MAX_THINKING_TOKENS; its reasoning lever is model_reasoning_effort.
+    // Mirror the mechanical-role thinking cap by defaulting those roles to low effort.
+    let e = effort as 'low' | 'medium' | 'high' | 'xhigh' | undefined;
+    if (!e && MECHANICAL_ROLES.has(role)) e = 'low';
     return codex(resolvedModel, { ...(e ? { effort: e } : {}) });
   }
   if (agentProvider === 'opencode') {
@@ -246,6 +256,43 @@ function runFailureMessage(message: string): string {
   ].join('\n');
 }
 
+const ROLE_LABELS: Record<string, string> = {
+  test_generator: 'test generator',
+  implementer: 'implementer',
+  reviewer: 'reviewer',
+  security_reviewer: 'security reviewer',
+  researcher: 'researcher',
+  refactor: 'refactor',
+};
+
+/**
+ * Liveness text for an orchestrator that's gone quiet. Its own stream is silent
+ * while it blocks on `spawn-worker --wait`, so name the active worker runs in its
+ * project — that turns dead air into "the pipeline is moving, here's on what".
+ * Sibling-by-project (not session-linked) is deliberately loose: it needs no
+ * schema/spawn-worker changes and over-inclusion is harmless for a hint.
+ */
+function orchestratorWaitingStatus(
+  projectId: string,
+  orchestratorRunId: string,
+  elapsedS: number,
+): string {
+  const workers = listRuns(projectId).filter(
+    (r) => r.id !== orchestratorRunId && r.role !== 'orchestrator' && isRunActive(r),
+  );
+  if (workers.length === 0) return `Orchestrator working… (${elapsedS}s)`;
+
+  const describe = (r: Run): string => {
+    const label = ROLE_LABELS[r.role] ?? r.role;
+    const name = r.name ? ` "${r.name}"` : '';
+    const since = r.started_at ? ` (${Math.round((Date.now() - r.started_at) / 1000)}s)` : '';
+    return `${label}${name}${since}`;
+  };
+
+  if (workers.length === 1) return `Waiting on worker — ${describe(workers[0])}`;
+  return `Waiting on ${workers.length} workers — ${workers.map(describe).join('; ')}`;
+}
+
 export async function startRun(options: StartRunOptions): Promise<void> {
   const abortController = new AbortController();
   activeRuns.set(options.id, abortController);
@@ -257,7 +304,8 @@ export async function startRun(options: StartRunOptions): Promise<void> {
   const fullPrompt = buildPrompt(options.prompt, options.role);
 
   // MCP URL: base from CONTAINER_ENV; sessionId = orchestrator session (empty for
-  // workers, which get beads tools but not session_set_status / session_compact).
+  // workers). The MCP server scopes tools by this: orchestrator gets the full set,
+  // workers get only the read-only task_prime (see toolsForRequest in routes/mcp.ts).
   const sessionId = options.orchestratorSessionId ?? '';
   // apiKey authenticates the container to the gated /mcp endpoint (non-loopback via host.docker.internal).
   const mcpUrl = `${CONTAINER_ENV.BOSS_MAN_API_URL}/mcp?sessionId=${sessionId}&projectId=${encodeURIComponent(options.projectId)}&apiKey=${encodeURIComponent(LITELLM_MASTER_KEY)}`;
@@ -293,7 +341,12 @@ export async function startRun(options: StartRunOptions): Promise<void> {
     // is alive and how long it's been working — turns the silent gap into signal.
     heartbeat = setInterval(() => {
       if (Date.now() - lastActivityAt < 12_000) return;
-      emitStatus(`Agent working… (${Math.round((Date.now() - runStartedAt) / 1000)}s)`);
+      const elapsedS = Math.round((Date.now() - runStartedAt) / 1000);
+      // Orchestrator silence almost always means it's blocked on a worker — name it.
+      const text = options.role === 'orchestrator'
+        ? orchestratorWaitingStatus(options.projectId, options.id, elapsedS)
+        : `Agent working… (${elapsedS}s)`;
+      emitStatus(text);
     }, 15_000);
 
     await ensureRepoHasHead(options.repoPath);
@@ -310,6 +363,7 @@ export async function startRun(options: StartRunOptions): Promise<void> {
         BOSS_MAN_PROJECT_ID: options.projectId,
         BOSS_MAN_CLAUDE_AUTH_PROVIDER: claudeAuthProvider,
         ...(options.orchestratorSessionId ? { BOSS_MAN_SESSION_ID: options.orchestratorSessionId } : {}),
+        ...(MECHANICAL_ROLES.has(options.role) ? { MAX_THINKING_TOKENS: MECHANICAL_THINKING_TOKENS } : {}),
       }),
       cwd: options.repoPath,
       prompt: fullPrompt,
@@ -368,7 +422,7 @@ export async function startRun(options: StartRunOptions): Promise<void> {
       changed_files: changedFiles.length > 0 ? JSON.stringify(changedFiles) : null,
     });
 
-    autoCloseBeadsTask(options.id);
+    autoCloseTask(options.id);
 
     // Server-owned rolling context (Option B): fold older turns into the session's
     // rolling summary so the next seeded prompt stays bounded. Orchestrator turns

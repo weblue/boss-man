@@ -143,7 +143,7 @@ boss-man-dashboard/
 │   ├── runner.ts    # Sandcastle run orchestration
 │   ├── streaming.ts # SSE pub/sub + persistence
 │   ├── config.ts    # env, model/auth helpers
-│   └── routes/      # sessions, runs, projects, beads, specs, models
+│   └── routes/      # sessions, runs, projects, tasks, specs, models
 ├── ui/src/
 │   ├── App.tsx      # all UI components (single file)
 │   ├── api.ts       # typed API client
@@ -178,4 +178,4 @@ Includes: Claude Code CLI, `spawn-worker`, RTK (token-efficiency proxy), system-
 
 Tasks, deps, memories live in `runs.db` (same SQLite as runs/events). No external service.
 
-Orchestrator manages tasks via MCP tools (`beads_create_task`, `beads_add_dependency`, `beads_list_unblocked`, …) backed by SQLite. Same ops exposed at `/api/beads/*` for the UI board. `beads_*` names kept for prompt compatibility — they're SQLite, not the `bd` CLI.
+Orchestrator manages tasks via MCP tools (`task_create`, `task_add_dependency`, `task_list_unblocked`, …) backed by SQLite. Same ops exposed at `/api/tasks/*` for the UI board.

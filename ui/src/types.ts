@@ -67,7 +67,7 @@ export interface SpecFile {
   last_commit_at: number | null;
 }
 
-export interface BeadsTask {
+export interface Task {
   id: string;
   title: string;
   body: string;

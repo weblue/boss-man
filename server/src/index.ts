@@ -7,7 +7,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { BOSS_MAN_ALLOWED_ORIGIN, LITELLM_MASTER_KEY, SERVER_PORT } from './config.js';
 import projectsRouter from './routes/projects.js';
 import runsRouter from './routes/runs.js';
-import beadsRouter from './routes/beads.js';
+import tasksRouter from './routes/tasks.js';
 import specsRouter from './routes/specs.js';
 import sessionsRouter from './routes/sessions.js';
 import modelsRouter from './routes/models.js';
@@ -70,7 +70,7 @@ app.use('/mcp', authGate);
 
 app.route('/', projectsRouter);
 app.route('/', runsRouter);
-app.route('/', beadsRouter);
+app.route('/', tasksRouter);
 app.route('/', specsRouter);
 app.route('/', sessionsRouter);
 app.route('/', modelsRouter);

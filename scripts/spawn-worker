@@ -14,7 +14,7 @@
 #   --max-iterations N (default: 3 — tasks not done in 3 passes need decomposition, not more retries)
 #   --agent         claude-code|codex|opencode (default: claude-code)
 #   --claude-auth   anthropic|litellm (default: inherited from orchestrator)
-#   --beads-task-id bd-XXXX (links run to a Beads task)
+#   --task-id task-XXXX (links run to a task)
 #   --wait          Block until run completes (polls every 5s)
 
 set -euo pipefail
@@ -29,7 +29,7 @@ NAME=""
 MAX_ITERATIONS=3
 AGENT="claude-code"
 CLAUDE_AUTH="${BOSS_MAN_CLAUDE_AUTH_PROVIDER:-}"
-BEADS_TASK_ID=""
+TASK_ID=""
 WAIT=false
 
 while [[ $# -gt 0 ]]; do
@@ -41,7 +41,7 @@ while [[ $# -gt 0 ]]; do
     --max-iterations) MAX_ITERATIONS="$2"; shift 2 ;;
     --agent)         AGENT="$2";         shift 2 ;;
     --claude-auth)   CLAUDE_AUTH="$2";   shift 2 ;;
-    --beads-task-id) BEADS_TASK_ID="$2"; shift 2 ;;
+    --task-id)       TASK_ID="$2";       shift 2 ;;
     --wait)          WAIT=true;          shift ;;
     *) echo "Unknown flag: $1" >&2; exit 1 ;;
   esac
@@ -71,7 +71,7 @@ PAYLOAD=$(jq -cn \
   --argjson maxIterations "$MAX_ITERATIONS" \
   --arg agentProvider "$AGENT" \
   --arg claudeAuthProvider "$CLAUDE_AUTH" \
-  --arg beadsTaskId "$BEADS_TASK_ID" \
+  --arg taskId "$TASK_ID" \
   '{
     projectId: $projectId,
     role: $role,
@@ -81,7 +81,7 @@ PAYLOAD=$(jq -cn \
     maxIterations: $maxIterations,
     name: (if $name != "" then $name else null end),
     model: (if $model != "" then $model else null end),
-    beadsTaskId: (if $beadsTaskId != "" then $beadsTaskId else null end)
+    taskId: (if $taskId != "" then $taskId else null end)
   }')
 
 RESPONSE=$(curl -sf -X POST "$API_URL/api/runs" \

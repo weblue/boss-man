@@ -38,7 +38,7 @@ router.post('/api/runs', async (c) => {
   const {
     projectId, role, prompt, model, name,
     agentProvider, sandboxProvider, maxIterations,
-    effort, beadsTaskId, claudeAuthProvider,
+    effort, taskId, claudeAuthProvider,
   } = body;
 
   if (!projectId) return c.json({ error: 'projectId is required' }, 400);
@@ -81,7 +81,7 @@ router.post('/api/runs', async (c) => {
     total_cache_read_tokens: 0,
     last_session_id: null,
     langfuse_trace_id: null,
-    beads_task_id: beadsTaskId ?? null,
+    beads_task_id: taskId ?? null,
     changed_files: null,
   });
 
@@ -100,7 +100,7 @@ router.post('/api/runs', async (c) => {
     agentProvider: resolvedProvider,
     claudeAuthProvider: resolvedClaudeAuthProvider,
     effort,
-    beadsTaskId,
+    taskId,
   }).catch(console.error);
 
   return c.json(getRun(id), 201);

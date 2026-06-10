@@ -52,7 +52,7 @@ import {
   sseUrl,
   startSession,
 } from './api';
-import type { AgentEvent, BeadsTask, Project, Run, Session } from './types';
+import type { AgentEvent, Task, Project, Run, Session } from './types';
 
 const TERMINAL_STATUSES = new Set(['completed', 'complete', 'failed', 'cancelled']);
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
@@ -960,7 +960,7 @@ function ChatTab({ project }: { project: Project }) {
   );
 }
 
-function taskGroup(task: BeadsTask): 'open' | 'in-progress' | 'done' {
+function taskGroup(task: Task): 'open' | 'in-progress' | 'done' {
   if (task.status === 'closed') return 'done';
   if (task.status === 'in_progress') return 'in-progress';
   return 'open';
@@ -991,7 +991,7 @@ function TasksTab({ project }: { project: Project }) {
   }, [runsQuery.data]);
 
   const grouped = useMemo(() => {
-    const groups: Record<'open' | 'in-progress' | 'done', BeadsTask[]> = {
+    const groups: Record<'open' | 'in-progress' | 'done', Task[]> = {
       open: [],
       'in-progress': [],
       done: [],

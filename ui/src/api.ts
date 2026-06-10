@@ -1,6 +1,6 @@
 import type {
   AgentEvent,
-  BeadsTask,
+  Task,
   Project,
   Run,
   Session,
@@ -224,9 +224,9 @@ export async function mergeToMain(
   );
 }
 
-export async function listTasks(projectId: string): Promise<BeadsTask[]> {
-  return json<BeadsTask[]>(
-    await fetch(`/api/beads/tasks?projectId=${encodeURIComponent(projectId)}`, { headers: authHeaders() }),
+export async function listTasks(projectId: string): Promise<Task[]> {
+  return json<Task[]>(
+    await fetch(`/api/tasks?projectId=${encodeURIComponent(projectId)}`, { headers: authHeaders() }),
   );
 }
 

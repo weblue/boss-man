@@ -1,7 +1,7 @@
 /**
  * MCP server — Streamable HTTP, JSON-RPC 2.0 over POST /mcp. No SDK; direct impl.
- * Beads tools backed by SQLite (runs.db) — no Dolt container.
- * URL params: ?sessionId=<uuid> (session_set_status / session_compact) · ?projectId=<id> (beads_* scope).
+ * Task tools backed by SQLite (runs.db) — no Dolt container.
+ * URL params: ?sessionId=<uuid> (session_set_status / session_compact) · ?projectId=<id> (task_* scope).
  */
 import { Hono } from 'hono';
 import { SERVER_PORT } from '../config.js';
@@ -24,13 +24,13 @@ const router = new Hono();
 
 const TOOLS = [
   {
-    name: 'beads_prime',
+    name: 'task_prime',
     description: 'Load task state and memories for this project. Call this at session startup.',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
-    name: 'beads_create_task',
-    description: 'Create a new task. Returns the task ID (bd-XXXX).',
+    name: 'task_create',
+    description: 'Create a new task. Returns the task ID (task-XXXX).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -41,7 +41,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'beads_add_dependency',
+    name: 'task_add_dependency',
     description: 'Add a dependency between tasks. child is blocked by parent.',
     inputSchema: {
       type: 'object',
@@ -53,7 +53,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'beads_complete_task',
+    name: 'task_complete',
     description: 'Mark a task as complete (closed).',
     inputSchema: {
       type: 'object',
@@ -64,12 +64,12 @@ const TOOLS = [
     },
   },
   {
-    name: 'beads_list_unblocked',
+    name: 'task_list_unblocked',
     description: 'List all tasks that have no unresolved blockers and are ready to work on.',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
-    name: 'beads_remember',
+    name: 'task_remember',
     description: 'Store a persistent memory note for this project.',
     inputSchema: {
       type: 'object',
@@ -80,7 +80,7 @@ const TOOLS = [
     },
   },
   {
-    name: 'beads_update_task',
+    name: 'task_update',
     description: 'Update a task status or claim it for work.',
     inputSchema: {
       type: 'object',
@@ -131,10 +131,26 @@ function err(text: string): ToolResult {
   return { content: [{ type: 'text', text: `Error: ${text}` }], isError: true };
 }
 
-const BEADS_TOOLS = new Set([
-  'beads_prime', 'beads_create_task', 'beads_add_dependency',
-  'beads_complete_task', 'beads_list_unblocked', 'beads_remember', 'beads_update_task',
+const TASK_TOOLS = new Set([
+  'task_prime', 'task_create', 'task_add_dependency',
+  'task_complete', 'task_list_unblocked', 'task_remember', 'task_update',
 ]);
+
+// Tools only the orchestrator should see. Workers run with an empty sessionId and
+// manage no task graph, so advertising these just inflates their per-message tool
+// schema for calls they'd never (or couldn't) make. Workers keep the read-only
+// `task_prime` to load project memories/task context.
+const ORCHESTRATOR_ONLY_TOOLS = new Set([
+  'session_set_status', 'session_compact',
+  'task_create', 'task_add_dependency', 'task_complete',
+  'task_update', 'task_list_unblocked', 'task_remember',
+]);
+
+/** A present sessionId marks an orchestrator run; absent/empty marks a worker. */
+function toolsForRequest(sessionId: string | undefined): typeof TOOLS {
+  if (sessionId) return TOOLS;
+  return TOOLS.filter((t) => !ORCHESTRATOR_ONLY_TOOLS.has(t.name));
+}
 
 async function callTool(
   name: string,
@@ -143,15 +159,15 @@ async function callTool(
   sessionId: string | undefined,
   projectId: string,
 ): Promise<ToolResult> {
-  if (BEADS_TOOLS.has(name) && !projectId) return err('projectId missing from MCP URL');
+  if (TASK_TOOLS.has(name) && !projectId) return err('projectId missing from MCP URL');
 
   try {
     switch (name) {
-      case 'beads_prime': {
+      case 'task_prime': {
         return ok(generatePrimeContext(projectId));
       }
 
-      case 'beads_create_task': {
+      case 'task_create': {
         const description = typeof args.description === 'string' ? args.description : null;
         if (!description) return err('description is required');
         const details = typeof args.details === 'string' ? args.details : undefined;
@@ -167,7 +183,7 @@ async function callTool(
         return ok(`task_id: ${id}\nCreated task ${id}: ${description}`);
       }
 
-      case 'beads_add_dependency': {
+      case 'task_add_dependency': {
         const child_id = typeof args.child_id === 'string' ? args.child_id : null;
         const parent_id = typeof args.parent_id === 'string' ? args.parent_id : null;
         if (!child_id || !parent_id) return err('child_id and parent_id are required');
@@ -175,26 +191,26 @@ async function callTool(
         return ok(`Dependency added: ${child_id} blocked by ${parent_id}`);
       }
 
-      case 'beads_complete_task': {
+      case 'task_complete': {
         const task_id = typeof args.task_id === 'string' ? args.task_id : null;
         if (!task_id) return err('task_id is required');
         closeTask(task_id, projectId);
         return ok(`Closed task ${task_id}`);
       }
 
-      case 'beads_list_unblocked': {
+      case 'task_list_unblocked': {
         const tasks = listUnblockedTasks(projectId);
         return ok(JSON.stringify(tasks, null, 2));
       }
 
-      case 'beads_remember': {
+      case 'task_remember': {
         const note = typeof args.note === 'string' ? args.note : null;
         if (!note) return err('note is required');
         insertMemory(projectId, note);
         return ok(`Memory stored: ${note}`);
       }
 
-      case 'beads_update_task': {
+      case 'task_update': {
         const task_id = typeof args.task_id === 'string' ? args.task_id : null;
         if (!task_id) return err('task_id is required');
         const status = typeof args.status === 'string' ? args.status : undefined;
@@ -310,8 +326,10 @@ router.post('/mcp', async (c) => {
     case 'notifications/initialized':
       return new Response(null, { status: 202 });
 
-    case 'tools/list':
-      return jsonRpcOk(id, { tools: TOOLS });
+    case 'tools/list': {
+      const sessionId = new URL(c.req.url).searchParams.get('sessionId') ?? undefined;
+      return jsonRpcOk(id, { tools: toolsForRequest(sessionId) });
+    }
 
     case 'ping':
       return jsonRpcOk(id, {});

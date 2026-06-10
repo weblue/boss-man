@@ -380,7 +380,7 @@ export interface Memory {
 }
 
 export function randomTaskId(): string {
-  return 'bd-' + randomBytes(4).toString('hex');
+  return 'task-' + randomBytes(4).toString('hex');
 }
 
 const _insertTask = db.prepare(`
