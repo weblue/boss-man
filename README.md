@@ -6,25 +6,16 @@
 
 ## How it works
 
-```
-Browser UI (React)  ──REST + SSE──▶  API server (Hono/Node)
-                                        │
-                          ┌─────────────┴─────────────┐
-                          ▼                           ▼
-                    SQLite (runs.db)         Sandcastle → Docker sandbox
-                    sessions · runs ·        (Claude Code / Codex / opencode)
-                    tasks · memories            │
-                                            git worktree branch per run
-```
+A React UI talks to a local Hono API server over REST + SSE; the server persists everything in SQLite and runs every agent in its own Docker sandbox (via Sandcastle) on an isolated git worktree branch.
 
 Each session moves through a fixed pipeline:
 
 1. **Discovery** — the orchestrator asks one question per turn across 8 topics (scope, stack, testing, acceptance criteria, non-functionals, protected territory, integrations, workflow) and won't write a line of spec until all are resolved.
 2. **Spec** — `constitution.md`, `spec.md`, `plan.md`, `tasks.md` written to `.spec/` and committed. You approve before anything is built.
-3. **Execution** — tasks are registered with dependencies, then for each unblocked task: a `test_generator` writes failing tests → an `implementer` makes them pass. The orchestrator only coordinates; it is hard-forbidden from writing code itself.
+3. **Execution** — tasks are registered with dependencies, then for each unblocked task: a `test_generator` writes failing **integration-first** tests (red) → an `implementer` makes them pass (green). Unit tests exist only to pin regressions. The orchestrator only coordinates; it is hard-forbidden from writing code itself.
 4. **Review gate** — a reviewer (Opus) checks everything against the spec before the session is marked complete. Merge the branch to main from the UI when you're happy.
 
-Workers are typed and tiered so expensive models are only spent where they matter:
+Workers are typed and tiered so expensive models are only spent where they matter — and **you pick the model behind each tier every time you boot**: `./start.sh` walks you through auth mode and a per-tier model menu, or pin choices in `.env` (`BOSS_MAN_AUTH_MODE`, `BOSS_MAN_PROFILE_HIGH/MED/LOW`) and skip the menu with `-y`.
 
 | Role | Tier | Default model |
 |------|------|---------------|
@@ -38,9 +29,11 @@ The parts that make long agent sessions actually sustainable:
 
 - **Server-owned rolling context.** Orchestrator turns never resume a provider session (whose history replays in full and snowballs). Instead the server reconstructs each turn from: system prompt + a rolling summary of old turns + authoritative task state from SQLite + the recent turns verbatim. Old turns are folded by a cheap model (with a `claude` CLI fallback on subscription auth, and a deterministic local digest as last resort) — context stays bounded no matter how long the session runs.
 - **Sandboxed, branch-isolated execution.** Every run gets its own Docker container and git worktree branch. Agents never touch your checkout or your host; your repo's `main` only changes when you click merge.
-- **Token efficiency by default.** RTK rewrites dev commands inside the sandbox (60–90% savings on `git`/test output), mechanical roles run with capped thinking budgets, MCP tool responses are compact, and every run's input/output/cache tokens are tallied in the UI.
+- **Token efficiency by default.** RTK filters dev-command output inside every sandbox (60–90% savings on `git`/test output), worker prompts enforce a strict token economy (summarize don't paste, bounded output, conciseness over grammar), the orchestrator hands each worker a context manifest so nothing re-explores the codebase, mechanical roles run with capped thinking budgets, and every run's input/output/cache tokens are tallied in the UI.
+- **Task graph and memories live with the project.** The orchestrator manages tasks, dependencies, and persistent memory notes through MCP tools backed by the same SQLite store that drives the UI board — no external tracker, nothing to sync, survives restarts.
+- **Bring your own harness.** Workers run on Claude Code by default; in litellm mode any run can use Codex or opencode instead, all behind the same tier aliases. The orchestrator dispatches them with a one-line `spawn-worker` CLI from inside its own sandbox.
 - **Live observability.** SSE streams text, tool calls, and heartbeats — when the orchestrator goes quiet because it's blocked on a worker, the UI says *which* worker and for how long. Changed files are tracked per run. LiteLLM mode adds Langfuse traces and costs.
-- **Crash & rate-limit recovery.** State checkpoints to `.spec/checkpoint.md`; interrupted sessions resume where they left off. Tasks and memories live in SQLite and survive restarts.
+- **Crash & rate-limit recovery.** State checkpoints to `.spec/checkpoint.md`; interrupted sessions resume where they left off.
 - **Two auth modes.** `claude` (default): workers authenticate with your Claude subscription — no API billing. `litellm`: everything routes through a LiteLLM proxy, unlocking local Ollama models, OpenAI models, and any agent harness.
 
 ## Screenshots

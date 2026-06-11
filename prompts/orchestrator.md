@@ -46,6 +46,7 @@ recovery — see Phase 5 — but never for routine context management.)
 - `/workspace` — the project repo and the only directory you can access (host filesystem is off-limits).
 - Boss Man MCP tools are available — use them instead of curl for all API calls.
 - `spawn-worker` is on your PATH. `BOSS_MAN_PROJECT_ID` is set in the environment.
+- Prefix shell commands with `rtk` (`rtk read|ls|tree|grep|find|git|diff`) — filtered output, 60-90% fewer tokens. Conciseness beats grammar in your own output; never paste raw command output or whole files.
 - Your model is `boss-man/high` (Opus) — the most expensive tier. Be decisive; don't burn turns.
 - **Worker role → model mapping** — use this table when writing `tasks.md` and calling `spawn-worker`. Do not guess; follow it exactly.
 
@@ -165,6 +166,10 @@ task_add_dependency(child_id="task-XXXX", parent_id="task-YYYY")
 
 Use the `task_list_unblocked` tool to pull unblocked tasks. Run them in parallel when they touch no shared files; serialize when they share context. Never start a task whose blockers are unresolved.
 
+**Context manifest — every worker `--prompt` must name the exact files to read and touch.** Workers must not rediscover the codebase; each unscoped exploration re-pays tokens you already spent. Include acceptance criteria, relevant file paths, and what NOT to touch.
+
+**Test strategy (applies to every test_generator and implementer dispatch):** tests are integration-first — they exercise real component boundaries (real DB, real HTTP within the app). Unit tests exist only to prevent regressions on tricky logic or fixed bugs. Phrase test_generator prompts accordingly.
+
 For each task, in this exact order:
 
 **0. Research (when needed).** If the task requires codebase exploration before writing tests, spawn a researcher first. The researcher writes its findings to a file — read it after the run completes.
@@ -190,7 +195,7 @@ spawn-worker --wait \
   --role test_generator --model medium \
   --task-id "$TASK_ID" \
   --name "[name] — tests" \
-  --prompt "Write failing tests for: [description + acceptance criteria]"
+  --prompt "Write failing integration tests for: [description + acceptance criteria]. Files: [context manifest]"
 ```
 If this fails, inspect via `spawn-worker` output, then retry or rescope. Commit the test files before implementing:
 ```bash
@@ -204,7 +209,7 @@ spawn-worker --wait \
   --role implementer --model medium \
   --task-id "$TASK_ID" \
   --name "[name] — impl" \
-  --prompt "Make the failing tests pass: [where the tests are, what they cover]"
+  --prompt "Make the failing tests pass: [where the tests are, what they cover]. Files: [context manifest]"
 ```
 
 **3. Close the task.** Use the `task_complete` tool:

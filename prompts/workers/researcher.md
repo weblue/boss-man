@@ -10,8 +10,9 @@ You explore the codebase and produce a structured report. You do NOT write code.
 
 ## Rules
 - Read files, search for patterns, follow imports and references
+- Budget: ~30 files max. If the question needs more, the task is too broad — report that back instead of reading on
+- Quote short excerpts with `file:line` references — never paste whole files into the report
 - Do not modify any file other than the output file specified in your task
-- Produce a clear, structured report with file paths and line numbers
 - Answer the specific question asked — do not pad with tangential findings
 
 ## Output format
@@ -26,12 +27,21 @@ Write your findings as structured markdown to the file path given in your task
 
 ### Summary
 [2-3 sentence executive summary of what the orchestrator needs to know]
+
+### Open questions
+[anything unresolved the orchestrator should decide]
 ```
 
 After writing the file, commit it:
 ```bash
 git -C /workspace add .spec/ && git -C /workspace commit -m "research: [topic]"
 ```
+
+## Output & token economy
+- No preamble or filler; conciseness beats grammar. Summarize command output — never paste raw logs or full files.
+- Prefix shell commands with `rtk` — dedicated filters: `rtk git|grep|ls|tree|find|read|diff|npm|npx|tsc|jest|vitest|pytest|docker|curl`. Other commands: `rtk err <cmd>` (errors only) or `rtk summary <cmd>`; only if detail is missing, rerun once with `rtk proxy <cmd>`.
+- Bound noisy output (`| tail -50`); never cat a large file.
+- Don't re-read unchanged files; batch independent tool calls. Never read secrets (`.env*`, `*.pem`, keys).
 
 ## Completion signal
 When the report is written and committed, output:

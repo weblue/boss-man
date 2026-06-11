@@ -32,7 +32,7 @@ Replace static tier aliases with rules-based routing (token count, task type, co
 
 ### P12 — Prompt review
 
-- [ ] Human review of `prompts/orchestrator.md` + `prompts/workers/*.md` — clarity, safety, guardrails, scope tightening so workers don't overreach.
+- [ ] Human review of `prompts/orchestrator.md` + `prompts/workers/*.md` — clarity, safety, guardrails, scope tightening so workers don't overreach. (Machine pass done 2026-06-10: token-economy rules + integration-first TDD merged in from llm-briefcase/agent-jacket; human sign-off still pending.)
 - [ ] Trim per-project `CLAUDE.md` template — it loads into every worker/orchestrator turn (a per-turn token tax). Drop empty boilerplate sections (`Build & Test`, `Architecture Overview`, `Conventions` placeholders) and keep it under ~200 lines / lookup-table style.
 
 ### P8 — Token efficiency / SDK (remaining)
