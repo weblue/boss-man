@@ -2,7 +2,8 @@
 
 **A local control plane for multi-agent AI development.** You describe what you want to build; an **orchestrator** agent (Opus) interviews you until the spec is unambiguous, commits it to the repo, breaks it into a dependency-ordered task graph, and drives a team of sandboxed **worker** agents through a test-first pipeline — while you watch every token, tool call, and file change live in your browser.
 
-![Chat — orchestrator session](docs/screenshots/chat.png)
+![Chat — an orchestrator turn with per-session token accounting, live tool feed, and completion summary](docs/screenshots/chat.png)
+*An orchestrator turn in Chat: token accounting for the whole session up top, the agent's summary and tool activity below.*
 
 ## How it works
 
@@ -14,6 +15,9 @@ Each session moves through a fixed pipeline:
 2. **Spec** — `constitution.md`, `spec.md`, `plan.md`, `tasks.md` written to `.spec/` and committed. You approve before anything is built.
 3. **Execution** — tasks are registered with dependencies, then for each unblocked task: a `test_generator` writes failing **integration-first** tests (red) → an `implementer` makes them pass (green). Unit tests exist only to pin regressions. The orchestrator only coordinates; it is hard-forbidden from writing code itself.
 4. **Review gate** — a reviewer (Opus) checks everything against the spec before the session is marked complete. Merge the branch to main from the UI when you're happy.
+
+![Spec tab — committed artifacts rendered from any branch](docs/screenshots/spec.png)
+*The Spec tab: discovery artifacts the orchestrator committed (`constitution.md`, `spec.md`, `plan.md`, `tasks.md`, checkpoints), rendered straight from git — whichever branch they live on.*
 
 Workers are typed and tiered so expensive models are only spent where they matter — and **you pick the model behind each tier every time you boot**: `./start.sh` walks you through auth mode and a per-tier model menu, or pin choices in `.env` (`BOSS_MAN_AUTH_MODE`, `BOSS_MAN_PROFILE_HIGH/MED/LOW`) and skip the menu with `-y`.
 
@@ -31,24 +35,14 @@ The parts that make long agent sessions actually sustainable:
 - **Sandboxed, branch-isolated execution.** Every run gets its own Docker container and git worktree branch. Agents never touch your checkout or your host; your repo's `main` only changes when you click merge.
 - **Token efficiency by default.** RTK filters dev-command output inside every sandbox (60–90% savings on `git`/test output), worker prompts enforce a strict token economy (summarize don't paste, bounded output, conciseness over grammar), the orchestrator hands each worker a context manifest so nothing re-explores the codebase, mechanical roles run with capped thinking budgets, and every run's input/output/cache tokens are tallied in the UI.
 - **Task graph and memories live with the project.** The orchestrator manages tasks, dependencies, and persistent memory notes through MCP tools backed by the same SQLite store that drives the UI board — no external tracker, nothing to sync, survives restarts.
+
+![Task board — dependency-aware kanban fed by the orchestrator's MCP tools](docs/screenshots/tasks.png)
+*The task board mid-pipeline: red tests in progress, the implementation task blocked behind them, completed work on the right.*
+
 - **Bring your own harness.** Workers run on Claude Code by default; in litellm mode any run can use Codex or opencode instead, all behind the same tier aliases. The orchestrator dispatches them with a one-line `spawn-worker` CLI from inside its own sandbox.
 - **Live observability.** SSE streams text, tool calls, and heartbeats — when the orchestrator goes quiet because it's blocked on a worker, the UI says *which* worker and for how long. Changed files are tracked per run. LiteLLM mode adds Langfuse traces and costs.
 - **Crash & rate-limit recovery.** State checkpoints to `.spec/checkpoint.md`; interrupted sessions resume where they left off.
 - **Two auth modes.** `claude` (default): workers authenticate with your Claude subscription — no API billing. `litellm`: everything routes through a LiteLLM proxy, unlocking local Ollama models, OpenAI models, and any agent harness.
-
-## Screenshots
-
-**Runs** — per-run tool feed, token accounting, changed files, and a merge-to-main button:
-
-![Run detail](docs/screenshots/runs.png)
-
-**Tasks** — dependency-aware board, fed by the orchestrator through its MCP tools:
-
-![Task board](docs/screenshots/tasks.png)
-
-**Spec** — the orchestrator's committed artifacts, rendered from any branch:
-
-![Spec viewer](docs/screenshots/spec.png)
 
 ## Setup
 
@@ -78,6 +72,9 @@ Open **http://localhost:8770** and log in with the `LITELLM_MASTER_KEY` from `.e
 3. **Answer the interview** — one question per turn, each with a recommendation. Push back freely; nothing is built until you confirm the spec summary.
 4. **Watch it build** — the Tasks board fills and drains, Runs shows each worker's activity live, Spec shows the committed artifacts. Every reply you send resumes the session with full context.
 5. **Merge** — after the review gate passes, use the merge button on a completed run (Runs tab) to land the branch on main.
+
+![Run detail — an implementer's tool feed, token usage, and changed files](docs/screenshots/runs.png)
+*A worker run up close: every command it ran (one line each, expandable), what it cost in tokens, and exactly which files it touched — with the merge button in the header.*
 
 Mid-session you can: switch models from the dropdown (cancel & switch if a turn is active), force a context compaction (↻ on the session), or cancel any run.
 
