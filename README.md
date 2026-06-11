@@ -1,181 +1,121 @@
 # Boss Man Dashboard
 
-Local web dashboard for multi-agent Claude Code sessions on your codebases. An **orchestrator** agent interviews you, then dispatches **worker** agents (implementer, reviewer, test-generator, …). React UI, live event streaming.
+**A local control plane for multi-agent AI development.** You describe what you want to build; an **orchestrator** agent (Opus) interviews you until the spec is unambiguous, commits it to the repo, breaks it into a dependency-ordered task graph, and drives a team of sandboxed **worker** agents through a test-first pipeline — while you watch every token, tool call, and file change live in your browser.
 
----
+![Chat — orchestrator session](docs/screenshots/chat.png)
 
-## Architecture
+## How it works
 
 ```
-Browser UI (Vite + React)
-        │ REST + SSE
-        ▼
- API Server (Hono / Node)
-        │
-   ┌────┴────────────────┐
-   ▼                     ▼
- SQLite (runs.db)    Sandcastle SDK
- tasks, memories,    Docker sandbox
- runs, events        (Claude Code)
-                          │
-                     git worktree
+Browser UI (React)  ──REST + SSE──▶  API server (Hono/Node)
+                                        │
+                          ┌─────────────┴─────────────┐
+                          ▼                           ▼
+                    SQLite (runs.db)         Sandcastle → Docker sandbox
+                    sessions · runs ·        (Claude Code / Codex / opencode)
+                    tasks · memories            │
+                                            git worktree branch per run
 ```
 
-| Component | Role |
-|-----------|------|
-| `server/` | Hono API — projects, sessions, runs, SSE, task/memory API |
-| `ui/` | React SPA — chat, task board, run history, spec viewer |
-| `sandcastle/` | Agent sandbox image (Claude Code + `spawn-worker`) |
-| `prompts/` | Orchestrator + worker prompts |
-| SQLite (`runs.db`) | Store for runs, tasks, memories, events, sessions |
-| LiteLLM | Model proxy — `boss-man/high\|medium\|low` aliases |
-| Langfuse | Optional observability (traces, costs) |
+Each session moves through a fixed pipeline:
 
----
+1. **Discovery** — the orchestrator asks one question per turn across 8 topics (scope, stack, testing, acceptance criteria, non-functionals, protected territory, integrations, workflow) and won't write a line of spec until all are resolved.
+2. **Spec** — `constitution.md`, `spec.md`, `plan.md`, `tasks.md` written to `.spec/` and committed. You approve before anything is built.
+3. **Execution** — tasks are registered with dependencies, then for each unblocked task: a `test_generator` writes failing tests → an `implementer` makes them pass. The orchestrator only coordinates; it is hard-forbidden from writing code itself.
+4. **Review gate** — a reviewer (Opus) checks everything against the spec before the session is marked complete. Merge the branch to main from the UI when you're happy.
 
-## Prerequisites
+Workers are typed and tiered so expensive models are only spent where they matter:
 
-- Node.js 22+ (`nvm install 22`)
-- Docker + Compose v2
-- git
-- Keys: `ANTHROPIC_API_KEY` (required), `OPENAI_API_KEY` (optional)
+| Role | Tier | Default model |
+|------|------|---------------|
+| orchestrator, reviewer, security_reviewer | `boss-man/high` | Opus |
+| implementer, test_generator, researcher | `boss-man/medium` | Sonnet |
+| refactor | `boss-man/low` | Haiku |
 
----
+## Under the hood
 
-## Install
+The parts that make long agent sessions actually sustainable:
+
+- **Server-owned rolling context.** Orchestrator turns never resume a provider session (whose history replays in full and snowballs). Instead the server reconstructs each turn from: system prompt + a rolling summary of old turns + authoritative task state from SQLite + the recent turns verbatim. Old turns are folded by a cheap model (with a `claude` CLI fallback on subscription auth, and a deterministic local digest as last resort) — context stays bounded no matter how long the session runs.
+- **Sandboxed, branch-isolated execution.** Every run gets its own Docker container and git worktree branch. Agents never touch your checkout or your host; your repo's `main` only changes when you click merge.
+- **Token efficiency by default.** RTK rewrites dev commands inside the sandbox (60–90% savings on `git`/test output), mechanical roles run with capped thinking budgets, MCP tool responses are compact, and every run's input/output/cache tokens are tallied in the UI.
+- **Live observability.** SSE streams text, tool calls, and heartbeats — when the orchestrator goes quiet because it's blocked on a worker, the UI says *which* worker and for how long. Changed files are tracked per run. LiteLLM mode adds Langfuse traces and costs.
+- **Crash & rate-limit recovery.** State checkpoints to `.spec/checkpoint.md`; interrupted sessions resume where they left off. Tasks and memories live in SQLite and survive restarts.
+- **Two auth modes.** `claude` (default): workers authenticate with your Claude subscription — no API billing. `litellm`: everything routes through a LiteLLM proxy, unlocking local Ollama models, OpenAI models, and any agent harness.
+
+## Screenshots
+
+**Runs** — per-run tool feed, token accounting, changed files, and a merge-to-main button:
+
+![Run detail](docs/screenshots/runs.png)
+
+**Tasks** — dependency-aware board, fed by the orchestrator through its MCP tools:
+
+![Task board](docs/screenshots/tasks.png)
+
+**Spec** — the orchestrator's committed artifacts, rendered from any branch:
+
+![Spec viewer](docs/screenshots/spec.png)
+
+## Setup
+
+Prereqs: Node 22+, Docker + Compose v2, git, and either a Claude subscription (logged into `claude` CLI) or an `ANTHROPIC_API_KEY`.
 
 ```bash
-./install.sh
+./install.sh   # checks prereqs · generates .env with random secrets ·
+               # npm install · builds the sandbox image · smoke-tests it
+./start.sh     # interactive: pick auth mode + a model per tier
+./start.sh -y  # non-interactive: uses BOSS_MAN_AUTH_MODE / BOSS_MAN_PROFILE_* from .env
 ```
 
-Checks prereqs · generates `.env` with random secrets (copies `ANTHROPIC_API_KEY` from shell) · `npm install` all workspaces · builds sandbox image (`boss-man:sandbox`) · smoke-tests it. Re-runnable — skips done steps. Edit `.env` after for missing keys.
+`start.sh` brings up LiteLLM (`:4000`, reused if already running) and Langfuse (`:3002`) in Docker, the API server (`:8771`), and the UI (`:8770`). `Ctrl+C` stops cleanly.
 
----
-
-## Scripts
-
-### `./start.sh`
-
-Starts everything. Reuses LiteLLM at `:4000` if already running (e.g. sibling project), else starts the standalone Compose stack. `Ctrl+C` stops cleanly.
-
-Starts:
-- Docker: Langfuse (`:3002`), LiteLLM (`:4000`) if needed
-- API server at `:8771`
-- UI via nginx at `:8770`
-
-### `./stop.sh`
+Open **http://localhost:8770** and log in with the `LITELLM_MASTER_KEY` from `.env`.
 
 ```bash
 ./stop.sh                    # dev servers only
 ./stop.sh --clean-containers # + remove stale sandbox containers
-./stop.sh --infra            # + stop Compose services (LiteLLM, Langfuse)
+./stop.sh --infra            # + stop LiteLLM / Langfuse
 ```
 
----
+## Using it
+
+1. **Create a project** (sidebar **+**) — empty, or paste a repo URL to clone.
+2. **Start a session** — paste your idea into "Initial spec", pick a model tier, hit Start.
+3. **Answer the interview** — one question per turn, each with a recommendation. Push back freely; nothing is built until you confirm the spec summary.
+4. **Watch it build** — the Tasks board fills and drains, Runs shows each worker's activity live, Spec shows the committed artifacts. Every reply you send resumes the session with full context.
+5. **Merge** — after the review gate passes, use the merge button on a completed run (Runs tab) to land the branch on main.
+
+Mid-session you can: switch models from the dropdown (cancel & switch if a turn is active), force a context compaction (↻ on the session), or cancel any run.
 
 ## Configuration
 
-All in `.env` (generated by `install.sh`). Key vars:
+Everything lives in `.env` (generated by `install.sh`). The ones you may actually touch:
 
 | Variable | Purpose |
 |----------|---------|
-| `ANTHROPIC_API_KEY` | Claude key (via LiteLLM) |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Optional — OAuth token instead of API key in sandbox |
-| `LITELLM_MASTER_KEY` | LiteLLM admin key (auto-gen) |
-| `LITELLM_API_KEY` | LiteLLM virtual key (auto-gen, = master) |
-| `LANGFUSE_SECRET_KEY` / `LANGFUSE_PUBLIC_KEY` | Langfuse keys (auto-gen) |
-| `SANDBOX_IMAGE` | Sandbox image name (default `boss-man:sandbox`) |
-| `SERVER_PORT` | API port (default `8771`) |
-| `UI_PORT` | UI port (default `8770`) |
+| `ANTHROPIC_API_KEY` | Backs LiteLLM-routed Claude calls (optional in claude mode) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Subscription auth for sandboxes without mounting `~/.claude` |
+| `OPENAI_API_KEY` | Enables `gpt-4o` / `gpt-4o-mini` tiers in litellm mode |
+| `BOSS_MAN_AUTH_MODE` | `claude` or `litellm` — default for `start.sh -y` |
+| `BOSS_MAN_LOCAL_MODEL` | Ollama model for the `local-worker` alias |
+| `SERVER_PORT` / `UI_PORT` | API (`8771`) and UI (`8770`) ports |
 
-### Model tiers
+Direct model IDs also work via the API: in claude mode any `claude-*` ID (or `opus`/`sonnet`/`haiku`) passes through to claude-code; in litellm mode the model must be registered in `litellm-config.yaml`.
 
-| Tier | Model |
-|------|-------|
-| `boss-man/high` | Opus (orchestrator, reviewer) |
-| `boss-man/medium` | Sonnet (implementer) |
-| `boss-man/low` | Haiku (simple workers) |
-
-Direct model IDs also work via the API: in claude mode any `claude-*` ID (or `opus`/`sonnet`/`haiku`) passes through to claude-code; in litellm mode the model must be registered in `litellm-config.yaml`. The UI selector lists tier aliases plus (litellm mode only) registered LiteLLM models.
-
----
-
-## Agent Roles
-
-### Orchestrator (`prompts/orchestrator.md`)
-
-Long-running Claude Code session. Interviews you across 8 topics before specs/workers:
-
-1. Scope & deliverables
-2. Stack & language
-3. Testing
-4. Acceptance criteria
-5. Non-functional (perf, security, scale)
-6. Protected territory (do-not-touch)
-7. Integration points (APIs, DBs, auth)
-8. User workflow
-
-Each topic ends `<task-complete/>` — pauses for your reply. Plans/creates tasks only after all 8 resolved.
-
-### Workers (`prompts/workers/`)
-
-Short-lived single-iteration agents dispatched via `spawn-worker`: `implementer`, `test_generator`, `reviewer`, `security_reviewer`, `researcher`, `refactor`.
-
----
-
-## Sessions
-
-1. **Start** — paste spec in Chat, pick backend + model, Start.
-2. **Discovery** — orchestrator asks one question per topic; reply + Enter.
-3. **Each reply** = new run resuming the Claude Code session (`--resume`), so context persists.
-4. **Mid-session model switch** — change the dropdown before any reply. If a run is active, "cancel & switch" aborts it first.
-5. **Persistence** — session files at `data/claude-sessions/<project-id>/`, bind-mounted into containers; survive restarts.
-
----
-
-## Directory Structure
+## Layout
 
 ```
-boss-man-dashboard/
-├── server/src/
-│   ├── index.ts     # entry, startup, markInterruptedRuns
-│   ├── db.ts        # SQLite schema + queries
-│   ├── runner.ts    # Sandcastle run orchestration
-│   ├── streaming.ts # SSE pub/sub + persistence
-│   ├── config.ts    # env, model/auth helpers
-│   └── routes/      # sessions, runs, projects, tasks, specs, models
-├── ui/src/
-│   ├── App.tsx      # all UI components (single file)
-│   ├── api.ts       # typed API client
-│   └── types.ts     # shared types
-├── sandcastle/Dockerfile  # agent sandbox image
-├── prompts/
-│   ├── orchestrator.md
-│   └── workers/
-├── scripts/spawn-worker   # orchestrator → worker dispatch
-├── data/                  # runtime (gitignored): runs.db, logs/, claude-sessions/
-├── docker-compose.yml     # Langfuse, standalone LiteLLM + Postgres
-├── litellm-config.yaml    # model aliases + routing
-├── callbacks.py           # LiteLLM OpenAI-Responses compat
-├── install.sh · start.sh · stop.sh
+server/src/        Hono API — runner, SSE streaming, rolling context, SQLite, routes/
+ui/src/            React SPA — chat, task board, run history, spec viewer
+prompts/           orchestrator.md + workers/*.md
+scripts/spawn-worker   orchestrator → worker dispatch (runs inside the sandbox)
+sandcastle/Dockerfile  agent sandbox image (Claude Code, Codex, RTK, spawn-worker)
+data/              runtime (gitignored): runs.db, logs/, claude-sessions/
 ```
 
----
-
-## Sandbox Image
-
-Docker image running Claude Code isolated. Built by `install.sh`, or manually from project root:
+Rebuild the sandbox image after changing `scripts/` or the Dockerfile:
 
 ```bash
 docker build -t boss-man:sandbox -f sandcastle/Dockerfile .
 ```
-
-Includes: Claude Code CLI, `spawn-worker`, RTK (token-efficiency proxy), system-level git config. Sandcastle runs containers as host UID/GID, mounts the worktree at `/home/agent/workspace`, symlinks `/workspace` → it.
-
----
-
-## Task Tracking
-
-Tasks, deps, memories live in `runs.db` (same SQLite as runs/events). No external service.
-
-Orchestrator manages tasks via MCP tools (`task_create`, `task_add_dependency`, `task_list_unblocked`, …) backed by SQLite. Same ops exposed at `/api/tasks/*` for the UI board.

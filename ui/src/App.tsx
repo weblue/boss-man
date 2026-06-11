@@ -1496,7 +1496,8 @@ function RunsTab({ project }: { project: Project }) {
                             })}
                           >
                             <span className="mt-0.5 shrink-0 font-mono text-blue">$</span>
-                            <span className="flex-1 truncate font-mono">{event.toolName}</span>
+                            <span className="shrink-0 font-mono">{event.toolName}</span>
+                            <span className="min-w-0 flex-1 truncate font-mono text-[11px] opacity-70">{toolCallSummary(event)}</span>
                             <ChevronDown size={11} className={classNames('mt-0.5 shrink-0 transition-transform', expandedRunTools.has(k) && 'rotate-180')} />
                           </button>
                           {expandedRunTools.has(k) && event.text && (
